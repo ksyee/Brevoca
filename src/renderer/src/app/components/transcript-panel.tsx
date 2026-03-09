@@ -1,6 +1,6 @@
 import { Languages, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, memo } from "react";
 
 interface TranscriptEntry {
   id: number;
@@ -14,7 +14,32 @@ interface TranscriptPanelProps {
   onClear: () => void;
 }
 
-export function TranscriptPanel({ entries, isRecording, onClear }: TranscriptPanelProps) {
+const TranscriptItem = memo(function TranscriptItem({ entry }: { entry: TranscriptEntry }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className="flex gap-3 group"
+    >
+      <span
+        className="text-white/20 shrink-0 pt-0.5 tabular-nums"
+        style={{ fontSize: "11px", fontFamily: "'JetBrains Mono', monospace" }}
+      >
+        {entry.time}
+      </span>
+      <p className="text-white/70" style={{ fontSize: "13.5px", lineHeight: "1.6" }}>
+        {entry.text}
+      </p>
+    </motion.div>
+  );
+});
+
+export const TranscriptPanel = memo(function TranscriptPanel({
+  entries,
+  isRecording,
+  onClear,
+}: TranscriptPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -66,27 +91,11 @@ export function TranscriptPanel({ entries, isRecording, onClear }: TranscriptPan
             </div>
           ) : (
             entries.map((entry) => (
-              <motion.div
-                key={entry.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, ease: "easeOut" }}
-                className="flex gap-3 group"
-              >
-                <span
-                  className="text-white/20 shrink-0 pt-0.5 tabular-nums"
-                  style={{ fontSize: "11px", fontFamily: "'JetBrains Mono', monospace" }}
-                >
-                  {entry.time}
-                </span>
-                <p className="text-white/70" style={{ fontSize: "13.5px", lineHeight: "1.6" }}>
-                  {entry.text}
-                </p>
-              </motion.div>
+              <TranscriptItem key={entry.id} entry={entry} />
             ))
           )}
         </AnimatePresence>
       </div>
     </div>
   );
-}
+});

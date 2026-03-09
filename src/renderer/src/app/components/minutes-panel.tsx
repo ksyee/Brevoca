@@ -1,5 +1,6 @@
 import { FileText, Copy, Download, RefreshCw, Sparkles } from "lucide-react";
 import { motion } from "motion/react";
+import { memo, useMemo } from "react";
 
 interface MinutesPanelProps {
   content: string;
@@ -10,7 +11,7 @@ interface MinutesPanelProps {
   onDownload: () => void;
 }
 
-export function MinutesPanel({
+export const MinutesPanel = memo(function MinutesPanel({
   content,
   isGenerating,
   hasTranscript,
@@ -18,6 +19,9 @@ export function MinutesPanel({
   onCopy,
   onDownload,
 }: MinutesPanelProps) {
+  // Memoize parsed lines to avoid re-splitting on every render
+  const parsedLines = useMemo(() => content.split("\n"), [content]);
+
   return (
     <div
       className="flex flex-col h-full rounded-2xl overflow-hidden"
@@ -111,7 +115,7 @@ export function MinutesPanel({
               className="text-white/70 whitespace-pre-wrap"
               style={{ fontSize: "13.5px", lineHeight: "1.8" }}
             >
-              {content.split("\n").map((line, i) => {
+              {parsedLines.map((line, i) => {
                 if (line.startsWith("# ")) {
                   return (
                     <h2
@@ -160,4 +164,4 @@ export function MinutesPanel({
       </div>
     </div>
   );
-}
+});

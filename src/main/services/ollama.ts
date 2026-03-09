@@ -100,15 +100,18 @@ ${transcript}
     }
 
     const decoder = new TextDecoder()
+    let pendingLine = ''
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      const text = decoder.decode(value, { stream: true })
-      const lines = text.split('\n').filter(line => line.trim())
+      pendingLine += decoder.decode(value, { stream: true })
+      const lines = pendingLine.split('\n')
+      pendingLine = lines.pop() ?? ''
 
       for (const line of lines) {
+        if (!line.trim()) continue
         try {
           const json = JSON.parse(line)
           if (json.response) {
@@ -117,6 +120,18 @@ ${transcript}
         } catch {
           // ignore malformed JSON lines
         }
+      }
+    }
+
+    pendingLine += decoder.decode()
+    if (pendingLine.trim()) {
+      try {
+        const json = JSON.parse(pendingLine)
+        if (json.response) {
+          onChunk(json.response)
+        }
+      } catch {
+        // ignore trailing malformed JSON line
       }
     }
   }

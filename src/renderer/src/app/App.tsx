@@ -9,11 +9,23 @@ import { motion, AnimatePresence } from "motion/react";
 
 // Audio processing constants
 const SAMPLE_RATE = 16000;
-const CHUNK_DURATION_SEC = 5; // Send audio chunks every 5 seconds
+const CHUNK_DURATION_SEC = 3; // Shorter chunks improve perceived transcription latency
+// Pre-allocated ring buffer: 10 seconds at 96kHz (generous upper bound)
+const AUDIO_RING_BUFFER_SIZE = 96000 * 10;
+// Hard cap to prevent unbounded renderer memory growth if Whisper falls behind.
+const MAX_AUDIO_RING_BUFFER_SIZE = 96000 * 30;
+const AUDIO_WORKLET_CHUNK_SIZE = 2048;
+const audioCaptureWorkletUrl = new URL("../worklets/audio-capture.worklet.js", import.meta.url);
+
+interface AudioRingBuffer {
+  buffer: Float32Array;
+  readPos: number;
+  writePos: number;
+  length: number;
+}
 
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
-  const [duration, setDuration] = useState(0);
   const [transcriptEntries, setTranscriptEntries] = useState<
     { id: number; time: string; text: string }[]
   >([]);
@@ -38,13 +50,33 @@ export default function App() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const entryIdRef = useRef(0);
   const fullTranscriptRef = useRef<string[]>([]);
+  // Duration tracked via ref to avoid App-wide re-renders every second
+  const durationRef = useRef(0);
+  const inputSampleRateRef = useRef(48000);
+  const processedInputSamplesRef = useRef(0);
 
   // Audio refs
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
-  const audioBufferRef = useRef<Float32Array[]>([]);
+  const silentGainRef = useRef<GainNode | null>(null);
   const chunkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Pre-allocated audio ring buffer (lazy-initialized in startRecording)
+  const audioRingRef = useRef<AudioRingBuffer | null>(null);
+  const processingChunkPromiseRef = useRef<Promise<void> | null>(null);
+  const isStartingRecordingRef = useRef(false);
+  const isStoppingRecordingRef = useRef(false);
+
+  // Whisper lazy init tracking
+  const whisperInitializedModelRef = useRef<string | null>(null);
+  const whisperInitPromiseRef = useRef<Promise<boolean> | null>(null);
+  const whisperInitTargetModelRef = useRef<string | null>(null);
+  const pendingWorkletFlushResolverRef = useRef<(() => void) | null>(null);
+
+  // Minutes streaming batch buffer
+  const minutesBufferRef = useRef("");
+  const minutesRafRef = useRef<number | null>(null);
 
   const formatTime = useCallback((totalSeconds: number) => {
     const m = Math.floor(totalSeconds / 60);
@@ -52,18 +84,182 @@ export default function App() {
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   }, []);
 
-  // Check Ollama connection on mount
+  const getChunkInputSampleCount = useCallback(() => {
+    const sampleRate = audioContextRef.current?.sampleRate || inputSampleRateRef.current;
+    return Math.max(1, Math.round(sampleRate * CHUNK_DURATION_SEC));
+  }, []);
+
+  const getAudioRingLength = useCallback(() => {
+    return audioRingRef.current?.length ?? 0;
+  }, []);
+
+  const resetAudioRing = useCallback(() => {
+    if (!audioRingRef.current) {
+      audioRingRef.current = {
+        buffer: new Float32Array(AUDIO_RING_BUFFER_SIZE),
+        readPos: 0,
+        writePos: 0,
+        length: 0,
+      };
+      return;
+    }
+
+    audioRingRef.current.readPos = 0;
+    audioRingRef.current.writePos = 0;
+    audioRingRef.current.length = 0;
+  }, []);
+
+  const discardOldestAudioSamples = useCallback((sampleCount: number) => {
+    const ring = audioRingRef.current;
+    if (!ring || sampleCount <= 0 || ring.length === 0) return;
+
+    const discardCount = Math.min(sampleCount, ring.length);
+    ring.readPos = (ring.readPos + discardCount) % ring.buffer.length;
+    ring.length -= discardCount;
+    processedInputSamplesRef.current += discardCount;
+
+    if (ring.length === 0) {
+      ring.writePos = ring.readPos;
+    }
+  }, []);
+
+  const ensureAudioRingCapacity = useCallback(
+    (incomingLength: number) => {
+      const ring = audioRingRef.current;
+      if (!ring || incomingLength <= ring.buffer.length - ring.length) return;
+
+      let nextSize = ring.buffer.length;
+      while (incomingLength > nextSize - ring.length && nextSize < MAX_AUDIO_RING_BUFFER_SIZE) {
+        nextSize *= 2;
+      }
+      nextSize = Math.min(nextSize, MAX_AUDIO_RING_BUFFER_SIZE);
+
+      if (incomingLength > nextSize - ring.length) {
+        return;
+      }
+
+      const nextBuffer = new Float32Array(nextSize);
+      if (ring.length > 0) {
+        if (ring.readPos < ring.writePos) {
+          nextBuffer.set(ring.buffer.subarray(ring.readPos, ring.writePos), 0);
+        } else {
+          const tail = ring.buffer.subarray(ring.readPos);
+          nextBuffer.set(tail, 0);
+          if (ring.writePos > 0) {
+            nextBuffer.set(ring.buffer.subarray(0, ring.writePos), tail.length);
+          }
+        }
+      }
+
+      ring.buffer = nextBuffer;
+      ring.readPos = 0;
+      ring.writePos = ring.length;
+    },
+    []
+  );
+
+  const appendToAudioRing = useCallback(
+    (inputData: Float32Array) => {
+      const ring = audioRingRef.current;
+      if (!ring || inputData.length === 0) return;
+
+      const overflowCount = ring.length + inputData.length - MAX_AUDIO_RING_BUFFER_SIZE;
+      if (overflowCount > 0) {
+        discardOldestAudioSamples(overflowCount);
+      }
+
+      ensureAudioRingCapacity(inputData.length);
+
+      const firstWriteLength = Math.min(inputData.length, ring.buffer.length - ring.writePos);
+      ring.buffer.set(inputData.subarray(0, firstWriteLength), ring.writePos);
+
+      const remainingLength = inputData.length - firstWriteLength;
+      if (remainingLength > 0) {
+        ring.buffer.set(inputData.subarray(firstWriteLength), 0);
+      }
+
+      ring.writePos = (ring.writePos + inputData.length) % ring.buffer.length;
+      ring.length += inputData.length;
+    },
+    [discardOldestAudioSamples, ensureAudioRingCapacity]
+  );
+
+  const drainAudioRing = useCallback((sampleCount?: number) => {
+    const ring = audioRingRef.current;
+    if (!ring || ring.length === 0) return null;
+
+    const drainLength = Math.min(sampleCount ?? ring.length, ring.length);
+    const drained = new Float32Array(drainLength);
+
+    if (ring.readPos + drainLength <= ring.buffer.length) {
+      drained.set(ring.buffer.subarray(ring.readPos, ring.readPos + drainLength), 0);
+    } else {
+      const firstSliceLength = ring.buffer.length - ring.readPos;
+      drained.set(ring.buffer.subarray(ring.readPos), 0);
+      drained.set(ring.buffer.subarray(0, drainLength - firstSliceLength), firstSliceLength);
+    }
+
+    ring.readPos = (ring.readPos + drainLength) % ring.buffer.length;
+    ring.length -= drainLength;
+
+    if (ring.length === 0) {
+      ring.writePos = ring.readPos;
+    }
+
+    return drained;
+  }, []);
+
+  const cleanupAudioGraph = useCallback(() => {
+    if (audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioSourceRef.current = null;
+    }
+    if (workletNodeRef.current) {
+      if (workletNodeRef.current instanceof AudioWorkletNode) {
+        workletNodeRef.current.port.onmessage = null;
+      }
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
+    if (silentGainRef.current) {
+      silentGainRef.current.disconnect();
+      silentGainRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    pendingWorkletFlushResolverRef.current?.();
+    pendingWorkletFlushResolverRef.current = null;
+  }, []);
+
+  const flushAudioCaptureNode = useCallback(async () => {
+    const node = workletNodeRef.current;
+    if (!(node instanceof AudioWorkletNode)) return;
+
+    await new Promise<void>((resolve) => {
+      pendingWorkletFlushResolverRef.current = resolve;
+      node.port.postMessage({ type: "flush" });
+    });
+  }, []);
+
+  // Check Ollama connection on mount (fetch models only once per connection)
   useEffect(() => {
+    let modelsLoaded = false;
     const checkOllama = async () => {
       if (window.electronAPI) {
         const result = await window.electronAPI.ollamaCheck();
-        setOllamaStatus(result.connected ? "connected" : "disconnected");
+        const connected = result.connected;
+        setOllamaStatus(connected ? "connected" : "disconnected");
 
-        if (result.connected) {
+        if (connected && !modelsLoaded) {
           const models = await window.electronAPI.ollamaModels();
           if (models.length > 0) {
             setAvailableModels(models);
+            modelsLoaded = true;
           }
+        } else if (!connected) {
+          modelsLoaded = false;
         }
       }
     };
@@ -97,104 +293,173 @@ export default function App() {
     };
   }, [selectedMicId]);
 
-  // Initialize Whisper on mount
-  useEffect(() => {
-    const initWhisper = async () => {
-      if (window.electronAPI) {
-        setWhisperStatus("loading");
-        const result = await window.electronAPI.whisperInit(whisperModel);
-        if (result.success) {
-          setWhisperStatus("ready");
-        } else {
-          console.error("Whisper init failed:", result.error);
-          setWhisperStatus("inactive");
-        }
+  // Lazy Whisper initialization — only loads model on first use
+  const ensureWhisperReady = useCallback(async (): Promise<boolean> => {
+    if (!window.electronAPI) return false;
+    if (whisperInitializedModelRef.current === whisperModel) return true;
+    if (
+      whisperInitPromiseRef.current &&
+      whisperInitTargetModelRef.current === whisperModel
+    ) {
+      return whisperInitPromiseRef.current;
+    }
+    if (whisperInitPromiseRef.current) {
+      try {
+        await whisperInitPromiseRef.current;
+      } catch {
+        // Ignore previous init failures and retry for the latest requested model.
       }
-    };
+      if (whisperInitializedModelRef.current === whisperModel) return true;
+    }
 
-    initWhisper();
+    const initPromise = (async () => {
+      setWhisperStatus("loading");
+      const result = await window.electronAPI.whisperInit(whisperModel);
+      if (result.success) {
+        whisperInitializedModelRef.current = whisperModel;
+        setWhisperStatus("ready");
+        return true;
+      }
+
+      console.error("Whisper init failed:", result.error);
+      setWhisperStatus("inactive");
+      return false;
+    })();
+
+    whisperInitTargetModelRef.current = whisperModel;
+    whisperInitPromiseRef.current = initPromise;
+
+    try {
+      return await initPromise;
+    } finally {
+      whisperInitPromiseRef.current = null;
+      whisperInitTargetModelRef.current = null;
+    }
   }, [whisperModel]);
 
-  // Convert Float32 audio to 16-bit PCM ArrayBuffer
-  const float32ToPCM16 = useCallback((float32Array: Float32Array): ArrayBuffer => {
-    const buffer = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(buffer);
-    for (let i = 0; i < float32Array.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  // Re-init Whisper if model changes while already initialized
+  useEffect(() => {
+    if (
+      whisperInitializedModelRef.current &&
+      whisperInitializedModelRef.current !== whisperModel &&
+      !isRecording &&
+      !isProcessingFile
+    ) {
+      ensureWhisperReady();
     }
-    return buffer;
-  }, []);
+  }, [whisperModel, ensureWhisperReady, isRecording, isProcessingFile]);
 
-  // Resample audio to 16kHz
-  const resampleTo16kHz = useCallback((audioData: Float32Array, originalSampleRate: number): Float32Array => {
-    if (originalSampleRate === SAMPLE_RATE) return audioData;
+  // Combined resample + PCM16 conversion (eliminates intermediate Float32Array)
+  const resampleAndConvertToPCM16 = useCallback(
+    (audioData: Float32Array, originalSampleRate: number): ArrayBuffer => {
+      const ratio = originalSampleRate / SAMPLE_RATE;
+      const newLength = Math.round(audioData.length / ratio);
+      const buffer = new ArrayBuffer(newLength * 2);
+      const view = new DataView(buffer);
 
-    const ratio = originalSampleRate / SAMPLE_RATE;
-    const newLength = Math.round(audioData.length / ratio);
-    const result = new Float32Array(newLength);
+      for (let i = 0; i < newLength; i++) {
+        const srcIndex = i * ratio;
+        const srcIndexFloor = Math.floor(srcIndex);
+        const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
+        const t = srcIndex - srcIndexFloor;
+        const sample = audioData[srcIndexFloor] * (1 - t) + audioData[srcIndexCeil] * t;
+        const s = Math.max(-1, Math.min(1, sample));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
 
-    for (let i = 0; i < newLength; i++) {
-      const srcIndex = i * ratio;
-      const srcIndexFloor = Math.floor(srcIndex);
-      const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
-      const t = srcIndex - srcIndexFloor;
-      result[i] = audioData[srcIndexFloor] * (1 - t) + audioData[srcIndexCeil] * t;
-    }
+      return buffer;
+    },
+    []
+  );
 
-    return result;
-  }, []);
-
-  // Process accumulated audio buffer
+  // Process accumulated audio buffer.
   const processAudioChunk = useCallback(async () => {
-    if (audioBufferRef.current.length === 0 || !window.electronAPI) return;
-
-    // Merge all audio chunks
-    const totalLength = audioBufferRef.current.reduce((acc, buf) => acc + buf.length, 0);
-    const merged = new Float32Array(totalLength);
-    let offset = 0;
-    for (const buf of audioBufferRef.current) {
-      merged.set(buf, offset);
-      offset += buf.length;
+    if (!window.electronAPI || getAudioRingLength() === 0) return;
+    if (processingChunkPromiseRef.current) {
+      return processingChunkPromiseRef.current;
     }
-    audioBufferRef.current = [];
 
-    // Resample to 16kHz
-    const sampleRate = audioContextRef.current?.sampleRate || 48000;
-    const resampled = resampleTo16kHz(merged, sampleRate);
+    const processingPromise = (async () => {
+      setWhisperStatus("processing");
+      try {
+        const inputChunkSize = getChunkInputSampleCount();
+        while (getAudioRingLength() > 0) {
+          const shouldWaitForMoreAudio =
+            isRecording && !isStoppingRecordingRef.current && getAudioRingLength() < inputChunkSize;
+          if (shouldWaitForMoreAudio) {
+            break;
+          }
 
-    // Convert to PCM16
-    const pcmBuffer = float32ToPCM16(resampled);
+          const audioData = drainAudioRing(inputChunkSize);
+          if (!audioData) break;
 
-    // Extract the previous text context as a prompt for the model
-    // This helps the model understand the ongoing sentence, reducing hallucinations
-    const recentText = fullTranscriptRef.current.slice(-2).join(" ");
+          const sampleRate = audioContextRef.current?.sampleRate || inputSampleRateRef.current;
+          const chunkStartSeconds = Math.floor(processedInputSamplesRef.current / sampleRate);
+          processedInputSamplesRef.current += audioData.length;
+          const pcmBuffer = resampleAndConvertToPCM16(audioData, sampleRate);
+          const recentText = fullTranscriptRef.current.slice(-2).join(" ");
 
-    // Send to Whisper
-    setWhisperStatus("processing");
-    const result = await window.electronAPI.whisperTranscribe(pcmBuffer, selectedLang, recentText || undefined);
-    setWhisperStatus("ready");
+          const result = await window.electronAPI.whisperTranscribe(
+            pcmBuffer,
+            selectedLang,
+            recentText || undefined
+          );
 
-    if (result.success && result.text && result.text.trim()) {
-      const text = result.text.trim();
-      const currentDuration = duration;
+          if (result.success && result.text && result.text.trim()) {
+            const text = result.text.trim();
 
-      fullTranscriptRef.current.push(text);
+            fullTranscriptRef.current.push(text);
 
-      setTranscriptEntries((prev) => [
-        ...prev,
-        {
-          id: entryIdRef.current++,
-          time: formatTime(currentDuration),
-          text,
-        },
-      ]);
-    }
-  }, [selectedLang, duration, formatTime, float32ToPCM16, resampleTo16kHz]);
+            setTranscriptEntries((prev) => [
+              ...prev,
+              {
+                id: entryIdRef.current++,
+                time: formatTime(chunkStartSeconds),
+                text,
+              },
+            ]);
+          }
+        }
+      } finally {
+        processingChunkPromiseRef.current = null;
+        setWhisperStatus("ready");
+      }
+    })();
+
+    processingChunkPromiseRef.current = processingPromise;
+    return processingPromise;
+  }, [drainAudioRing, formatTime, getAudioRingLength, getChunkInputSampleCount, isRecording, resampleAndConvertToPCM16, selectedLang]);
+
+  const handleCapturedAudioChunk = useCallback(
+    (audioData: Float32Array) => {
+      appendToAudioRing(audioData);
+
+      if (
+        !processingChunkPromiseRef.current &&
+        getAudioRingLength() >= getChunkInputSampleCount()
+      ) {
+        void processAudioChunk();
+      }
+    },
+    [appendToAudioRing, getAudioRingLength, getChunkInputSampleCount, processAudioChunk]
+  );
 
   // Start recording
   const startRecording = useCallback(async () => {
+    if (isStartingRecordingRef.current || isStoppingRecordingRef.current || isRecording) {
+      return;
+    }
+
+    isStartingRecordingRef.current = true;
     try {
+      // Ensure Whisper is ready before starting
+      const ready = await ensureWhisperReady();
+      if (!ready) {
+        setErrorMessage("Whisper 모델을 초기화할 수 없습니다.");
+        setTimeout(() => setErrorMessage(null), 5000);
+        return;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
@@ -208,21 +473,58 @@ export default function App() {
       mediaStreamRef.current = stream;
       const audioContext = new AudioContext({ sampleRate: undefined }); // Use device default
       audioContextRef.current = audioContext;
+      inputSampleRateRef.current = audioContext.sampleRate;
 
       const source = audioContext.createMediaStreamSource(stream);
+      audioSourceRef.current = source;
+      const silentGain = audioContext.createGain();
+      silentGain.gain.value = 0;
+      silentGainRef.current = silentGain;
 
-      // Use ScriptProcessorNode for compatibility
-      const bufferSize = 4096;
-      const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+      resetAudioRing();
 
-      processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioBufferRef.current.push(new Float32Array(inputData));
-      };
+      let captureNode: AudioWorkletNode | ScriptProcessorNode;
+      try {
+        await audioContext.audioWorklet.addModule(audioCaptureWorkletUrl.toString());
+        const workletNode = new AudioWorkletNode(audioContext, "audio-capture-processor", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          channelCount: 1,
+          processorOptions: {
+            chunkSize: AUDIO_WORKLET_CHUNK_SIZE,
+          },
+        });
 
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      workletNodeRef.current = processor;
+        workletNode.port.onmessage = (event) => {
+          if (event.data?.type === "audio" && event.data.audioData instanceof ArrayBuffer) {
+            handleCapturedAudioChunk(new Float32Array(event.data.audioData));
+            return;
+          }
+
+          if (event.data?.type === "flushed") {
+            pendingWorkletFlushResolverRef.current?.();
+            pendingWorkletFlushResolverRef.current = null;
+          }
+        };
+
+        captureNode = workletNode;
+      } catch (workletError) {
+        console.warn("AudioWorklet unavailable, falling back to ScriptProcessorNode.", workletError);
+
+        const bufferSize = 4096;
+        const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+        processor.onaudioprocess = (e) => {
+          const inputData = e.inputBuffer.getChannelData(0);
+          handleCapturedAudioChunk(new Float32Array(inputData));
+        };
+        captureNode = processor;
+      }
+
+      source.connect(captureNode);
+      captureNode.connect(silentGain);
+      silentGain.connect(audioContext.destination);
+      workletNodeRef.current = captureNode;
 
       // Set up chunk processing timer
       chunkTimerRef.current = setInterval(() => {
@@ -230,15 +532,16 @@ export default function App() {
       }, CHUNK_DURATION_SEC * 1000);
 
       setIsRecording(true);
-      setDuration(0);
+      durationRef.current = 0;
+      processedInputSamplesRef.current = 0;
       entryIdRef.current = 0;
       setTranscriptEntries([]);
       setMinutesContent("");
       fullTranscriptRef.current = [];
 
-      // Duration timer
+      // Duration timer — only updates ref, no re-render
       timerRef.current = setInterval(() => {
-        setDuration((prev) => prev + 1);
+        durationRef.current += 1;
       }, 1000);
     } catch (error: any) {
       console.error("Failed to start recording:", error);
@@ -250,37 +553,89 @@ export default function App() {
       }
       setErrorMessage(msg);
       setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      isStartingRecordingRef.current = false;
     }
-  }, [processAudioChunk]);
+  }, [ensureWhisperReady, handleCapturedAudioChunk, isRecording, resetAudioRing, selectedMicId]);
 
   // Stop recording
-  const stopRecording = useCallback(() => {
-    setIsRecording(false);
-    setWhisperStatus("ready");
-
-    // Stop timers
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (chunkTimerRef.current) clearInterval(chunkTimerRef.current);
-
-    // Process any remaining audio
-    processAudioChunk();
-
-    // Stop media stream
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
+  const stopRecording = useCallback(async () => {
+    if (isStoppingRecordingRef.current) {
+      return;
     }
 
-    // Clean up audio context
-    if (workletNodeRef.current) {
-      workletNodeRef.current.disconnect();
-      workletNodeRef.current = null;
+    isStoppingRecordingRef.current = true;
+    try {
+      setIsRecording(false);
+
+      // Stop timers
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      if (chunkTimerRef.current) {
+        clearInterval(chunkTimerRef.current);
+        chunkTimerRef.current = null;
+      }
+
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect();
+        audioSourceRef.current = null;
+      }
+
+      if (workletNodeRef.current instanceof AudioWorkletNode) {
+        try {
+          await flushAudioCaptureNode();
+        } catch {
+          pendingWorkletFlushResolverRef.current = null;
+        }
+      }
+
+      if (workletNodeRef.current) {
+        if (workletNodeRef.current instanceof AudioWorkletNode) {
+          workletNodeRef.current.port.onmessage = null;
+        }
+        workletNodeRef.current.disconnect();
+        workletNodeRef.current = null;
+      }
+      if (silentGainRef.current) {
+        silentGainRef.current.disconnect();
+        silentGainRef.current = null;
+      }
+
+      if (processingChunkPromiseRef.current) {
+        try {
+          await processingChunkPromiseRef.current;
+        } catch {
+          // Surface of whisper errors is handled by the invoke response.
+        }
+      }
+
+      while (getAudioRingLength() > 0) {
+        await processAudioChunk();
+        if (processingChunkPromiseRef.current) {
+          try {
+            await processingChunkPromiseRef.current;
+          } catch {
+            break;
+          }
+        }
+      }
+
+      // Stop media stream
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+
+      // Clean up audio context
+      cleanupAudioGraph();
+
+      setWhisperStatus("ready");
+    } finally {
+      isStoppingRecordingRef.current = false;
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-  }, [processAudioChunk]);
+  }, [cleanupAudioGraph, flushAudioCaptureNode, getAudioRingLength, processAudioChunk]);
 
   const toggleRecording = useCallback(() => {
     if (!isRecording) {
@@ -290,19 +645,41 @@ export default function App() {
     }
   }, [isRecording, startRecording, stopRecording]);
 
-  // Generate minutes via Ollama
+  // Generate minutes via Ollama (with batched streaming updates)
   const generateMinutes = useCallback(async () => {
     if (!window.electronAPI || fullTranscriptRef.current.length === 0) return;
 
+    window.electronAPI.removeOllamaListeners();
+    if (minutesRafRef.current !== null) {
+      cancelAnimationFrame(minutesRafRef.current);
+      minutesRafRef.current = null;
+    }
+
     setIsGeneratingMinutes(true);
     setMinutesContent("");
+    minutesBufferRef.current = "";
+
+    const flushMinutesBuffer = () => {
+      setMinutesContent(minutesBufferRef.current);
+      minutesRafRef.current = null;
+    };
 
     // Set up streaming listeners
     window.electronAPI.onOllamaChunk((chunk: string) => {
-      setMinutesContent((prev) => prev + chunk);
+      minutesBufferRef.current += chunk;
+      // Batch updates using requestAnimationFrame
+      if (minutesRafRef.current === null) {
+        minutesRafRef.current = requestAnimationFrame(flushMinutesBuffer);
+      }
     });
 
     window.electronAPI.onOllamaDone(() => {
+      // Flush any remaining buffered content
+      if (minutesRafRef.current !== null) {
+        cancelAnimationFrame(minutesRafRef.current);
+        minutesRafRef.current = null;
+      }
+      setMinutesContent(minutesBufferRef.current);
       setIsGeneratingMinutes(false);
       window.electronAPI.removeOllamaListeners();
     });
@@ -312,6 +689,10 @@ export default function App() {
 
     if (!result.success) {
       console.error("Minutes generation failed:", result.error);
+      if (minutesRafRef.current !== null) {
+        cancelAnimationFrame(minutesRafRef.current);
+        minutesRafRef.current = null;
+      }
       setIsGeneratingMinutes(false);
       setMinutesContent("회의록 생성에 실패했습니다: " + (result.error || "알 수 없는 오류"));
       window.electronAPI.removeOllamaListeners();
@@ -324,7 +705,14 @@ export default function App() {
 
     const filePath = await window.electronAPI.selectAudioFile();
     if (!filePath) {
-      // User canceled the dialog
+      return;
+    }
+
+    // Ensure Whisper is ready before processing
+    const ready = await ensureWhisperReady();
+    if (!ready) {
+      setErrorMessage("Whisper 모델을 초기화할 수 없습니다.");
+      setTimeout(() => setErrorMessage(null), 5000);
       return;
     }
 
@@ -348,7 +736,7 @@ export default function App() {
           ...prev,
           {
             id: entryIdRef.current++,
-            time: formatTime(0), // Ffmpeg stream doesn't easily give exact chunk start time without extensive math, leaving at 00:00 for simplicty or just counting up.
+            time: formatTime(0),
             text,
           },
         ]);
@@ -375,7 +763,7 @@ export default function App() {
       setFileProcessProgress(null);
       window.electronAPI.removeWhisperListeners();
     }
-  }, [selectedLang, formatTime]);
+  }, [selectedLang, formatTime, ensureWhisperReady]);
 
   const clearTranscript = useCallback(() => {
     setTranscriptEntries([]);
@@ -402,14 +790,13 @@ export default function App() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (chunkTimerRef.current) clearInterval(chunkTimerRef.current);
+      if (minutesRafRef.current) cancelAnimationFrame(minutesRafRef.current);
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach((track) => track.stop());
       }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
+      cleanupAudioGraph();
     };
-  }, []);
+  }, [cleanupAudioGraph]);
 
   return (
     <div
@@ -593,7 +980,6 @@ export default function App() {
           isPaused={false}
           isProcessingFile={isProcessingFile}
           fileProcessProgress={fileProcessProgress}
-          duration={duration}
           onToggleRecording={toggleRecording}
           onStop={stopRecording}
           onFileUpload={handleFileUpload}

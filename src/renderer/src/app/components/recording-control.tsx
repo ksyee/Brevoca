@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { Mic, MicOff, Square, FileAudio } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -7,7 +7,6 @@ export interface RecordingControlProps {
   isPaused: boolean;
   isProcessingFile: boolean;
   fileProcessProgress?: number | null;
-  duration: number;
   onToggleRecording: () => void;
   onStop: () => void;
   onFileUpload?: () => void;
@@ -21,16 +20,36 @@ function formatDuration(seconds: number) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-export function RecordingControl({
+export const RecordingControl = memo(function RecordingControl({
   isRecording,
   isPaused,
   isProcessingFile,
   fileProcessProgress,
-  duration,
   onToggleRecording,
   onStop,
   onFileUpload,
 }: RecordingControlProps) {
+  // Internal duration timer — only this component re-renders on tick
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    if (isRecording) {
+      setDuration(0);
+      const timer = setInterval(() => setDuration((prev) => prev + 1), 1000);
+      return () => clearInterval(timer);
+    }
+  }, [isRecording]);
+
+  // Pre-compute random waveform parameters once on mount
+  const waveformParams = useMemo(
+    () =>
+      Array.from({ length: 32 }, (_, i) => ({
+        randomHeight: Math.random() * 16,
+        randomDuration: 0.4 + Math.random() * 0.4,
+        sinBase: Math.sin(i * 0.5) * 20,
+      })),
+    []
+  );
 
   return (
     <div
@@ -39,10 +58,10 @@ export function RecordingControl({
     >
       {/* Waveform visualization */}
       <div className="flex items-center gap-[3px] h-12">
-        {Array.from({ length: 32 }).map((_, i) => {
+        {waveformParams.map((params, i) => {
           const active = isRecording || isProcessingFile;
           const baseHeight = active
-            ? 8 + Math.sin(i * 0.5) * 20 + Math.random() * 16
+            ? 8 + params.sinBase + params.randomHeight
             : 4;
           return (
             <motion.div
@@ -59,7 +78,7 @@ export function RecordingControl({
                 height: active ? [baseHeight * 0.3, baseHeight, baseHeight * 0.5] : 4,
               }}
               transition={{
-                duration: 0.4 + Math.random() * 0.4,
+                duration: params.randomDuration,
                 repeat: Infinity,
                 repeatType: "reverse",
                 ease: "easeInOut",
@@ -176,4 +195,4 @@ export function RecordingControl({
       </p>
     </div>
   );
-}
+});

@@ -1,6 +1,7 @@
 import path from 'path'
 import { app } from 'electron'
 import fs from 'fs'
+import os from 'os'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 
@@ -8,6 +9,12 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
 let whisperModule: any = null
+
+const AVAILABLE_PARALLELISM =
+  typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length
+const CPU_THREAD_COUNT = Math.max(1, Math.min(8, AVAILABLE_PARALLELISM))
+const CPU_PROCESSOR_COUNT = CPU_THREAD_COUNT >= 8 ? 2 : 1
+const CPU_THREADS_PER_PROCESSOR = Math.max(1, Math.floor(CPU_THREAD_COUNT / CPU_PROCESSOR_COUNT))
 
 export class WhisperService {
   private context: any = null
@@ -91,6 +98,10 @@ export class WhisperService {
       // transcribeData returns { stop, promise }
       const options: any = {
         language,
+        maxThreads: CPU_THREADS_PER_PROCESSOR,
+        nProcessors: CPU_PROCESSOR_COUNT,
+        bestOf: 1,
+        beamSize: 1,
         maxLen: 0,
         translate: false,
         temperature: 0.0,
@@ -134,6 +145,8 @@ export class WhisperService {
 
       let audioStream: Buffer[] = []
       let totalBytesReceived = 0
+      // Track accumulated buffer length with a counter instead of reduce() on every data event
+      let currentBufferLength = 0
       let fullTranscript: string[] = []
 
       // To calculate progress, we need file duration
@@ -160,13 +173,15 @@ export class WhisperService {
         ffStream.on('data', (chunk: Buffer) => {
           audioStream.push(chunk)
           totalBytesReceived += chunk.length
+          currentBufferLength += chunk.length
 
-          const currentBufferLength = audioStream.reduce((acc, b) => acc + b.length, 0)
           if (currentBufferLength >= CHUNK_BYTE_SIZE) {
             // Extract exactly one chunk
             const merged = Buffer.concat(audioStream)
             const chunkToProcess = merged.slice(0, CHUNK_BYTE_SIZE)
-            audioStream = [merged.slice(CHUNK_BYTE_SIZE)] // keep remainder
+            const remainder = merged.slice(CHUNK_BYTE_SIZE)
+            audioStream = [remainder]
+            currentBufferLength = remainder.length
 
             processPromise = processPromise.then(async () => {
               const buffer = chunkToProcess.buffer.slice(
@@ -177,6 +192,10 @@ export class WhisperService {
               const prompt = fullTranscript.slice(-2).join(' ')
               const { promise } = this.context.transcribeData(buffer, {
                 language,
+                maxThreads: CPU_THREADS_PER_PROCESSOR,
+                nProcessors: CPU_PROCESSOR_COUNT,
+                bestOf: 1,
+                beamSize: 1,
                 maxLen: 0,
                 translate: false,
                 temperature: 0.0,
@@ -223,6 +242,10 @@ export class WhisperService {
                 const prompt = fullTranscript.slice(-2).join(' ')
                 const { promise } = this.context.transcribeData(buffer, {
                   language,
+                  maxThreads: CPU_THREADS_PER_PROCESSOR,
+                  nProcessors: CPU_PROCESSOR_COUNT,
+                  bestOf: 1,
+                  beamSize: 1,
                   maxLen: 0,
                   translate: false,
                   temperature: 0.0,

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx.cmd tsc --noEmit)",
+      "Bash(/c/Users/KSY/AppData/Roaming/nvm/v22.15.0/npx.cmd tsc --noEmit)"
+    ]
+  }
+}
