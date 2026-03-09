@@ -6,7 +6,14 @@ interface MinutesPanelProps {
   content: string;
   isGenerating: boolean;
   hasTranscript: boolean;
+  ollamaConnected: boolean;
+  ollamaHasModels: boolean;
+  selectedModelInstalled: boolean;
+  isPullingModel: boolean;
+  modelPullStatus: string | null;
+  downloadModelName: string;
   onGenerate: () => void;
+  onDownloadOllama: () => void;
   onCopy: () => void;
   onDownload: () => void;
 }
@@ -15,12 +22,21 @@ export const MinutesPanel = memo(function MinutesPanel({
   content,
   isGenerating,
   hasTranscript,
+  ollamaConnected,
+  ollamaHasModels,
+  selectedModelInstalled,
+  isPullingModel,
+  modelPullStatus,
+  downloadModelName,
   onGenerate,
+  onDownloadOllama,
   onCopy,
   onDownload,
 }: MinutesPanelProps) {
   // Memoize parsed lines to avoid re-splitting on every render
   const parsedLines = useMemo(() => content.split("\n"), [content]);
+  const canGenerateMinutes = ollamaConnected && ollamaHasModels && selectedModelInstalled;
+  const needsModelDownload = ollamaConnected && !selectedModelInstalled;
 
   return (
     <div
@@ -78,24 +94,80 @@ export const MinutesPanel = memo(function MinutesPanel({
               <FileText size={36} />
             </div>
             <p className="text-white/20 text-center" style={{ fontSize: "13px", lineHeight: "1.6" }}>
-              녹음 종료 후 AI가 회의록을 자동 생성합니다
+              {!ollamaConnected
+                ? "Ollama 연결 후 회의록 생성이 가능합니다"
+                : !selectedModelInstalled
+                ? "선택한 Ollama 모델 다운로드가 필요합니다"
+                : ollamaHasModels
+                ? "녹음 종료 후 AI가 회의록을 자동 생성합니다"
+                : "설치된 Ollama 모델이 없습니다"}
             </p>
             {hasTranscript && (
               <motion.button
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 onClick={onGenerate}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl cursor-pointer transition-all hover:brightness-110"
+                disabled={!canGenerateMinutes}
+                title={
+                  !ollamaConnected
+                    ? "Ollama 연결 대기 중"
+                    : !selectedModelInstalled
+                      ? "선택한 Ollama 모델 다운로드 필요"
+                    : ollamaHasModels
+                      ? "회의록 생성"
+                      : "설치된 Ollama 모델 없음"
+                }
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all"
                 style={{
-                  background: "linear-gradient(135deg, #7c3aed, #6366f1)",
-                  boxShadow: "0 0 20px rgba(124,58,237,0.3)",
+                  background: canGenerateMinutes
+                    ? "linear-gradient(135deg, #7c3aed, #6366f1)"
+                    : "rgba(255,255,255,0.08)",
+                  boxShadow: canGenerateMinutes ? "0 0 20px rgba(124,58,237,0.3)" : "none",
                   fontSize: "13px",
                   color: "white",
+                  cursor: canGenerateMinutes ? "pointer" : "not-allowed",
+                  opacity: canGenerateMinutes ? 1 : 0.55,
                 }}
               >
                 <Sparkles size={14} />
                 회의록 생성
               </motion.button>
+            )}
+            {!ollamaConnected && (
+              <button
+                onClick={onDownloadOllama}
+                className="px-4 py-2 rounded-xl text-white transition-all"
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  fontSize: "12px",
+                }}
+              >
+                Ollama 다운로드
+              </button>
+            )}
+            {needsModelDownload && (
+              <>
+                <button
+                  onClick={onDownloadOllama}
+                  disabled={isPullingModel}
+                  className="px-4 py-2 rounded-xl text-white transition-all"
+                  style={{
+                    background: isPullingModel
+                      ? "rgba(255,255,255,0.08)"
+                      : "linear-gradient(135deg, #0f766e, #0ea5e9)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    fontSize: "12px",
+                    cursor: isPullingModel ? "wait" : "pointer",
+                    opacity: isPullingModel ? 0.7 : 1,
+                  }}
+                >
+                  {isPullingModel ? "모델 다운로드 중..." : `${downloadModelName} 다운로드`}
+                </button>
+                <p className="text-white/25 text-center" style={{ fontSize: "12px", lineHeight: "1.6" }}>
+                  {modelPullStatus || `${downloadModelName} 모델을 앱에서 바로 내려받을 수 있습니다.`}
+                </p>
+              </>
             )}
           </div>
         ) : (
@@ -157,6 +229,11 @@ export const MinutesPanel = memo(function MinutesPanel({
                   animate={{ opacity: [1, 0] }}
                   transition={{ duration: 0.6, repeat: Infinity }}
                 />
+              )}
+              {!ollamaConnected && hasTranscript && (
+                <p className="text-white/25 text-center" style={{ fontSize: "12px" }}>
+                  앱이 Ollama 서버 시작을 자동으로 시도합니다.
+                </p>
               )}
             </div>
           </div>

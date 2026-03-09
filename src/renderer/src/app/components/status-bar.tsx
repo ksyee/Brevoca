@@ -5,10 +5,25 @@ interface StatusBarProps {
   whisperStatus: "ready" | "loading" | "processing" | "inactive";
   ollamaStatus: "connected" | "disconnected";
   micStatus: "connected" | "disconnected";
+  whisperModel: string;
+  whisperEngine: string | null;
+  whisperBackend: string | null;
+  whisperGpuEnabled: boolean;
+  whisperRuntimeReady: boolean;
   modelName: string;
 }
 
-export function StatusBar({ whisperStatus, ollamaStatus, micStatus, modelName }: StatusBarProps) {
+export function StatusBar({
+  whisperStatus,
+  ollamaStatus,
+  micStatus,
+  whisperModel,
+  whisperEngine,
+  whisperBackend,
+  whisperGpuEnabled,
+  whisperRuntimeReady,
+  modelName,
+}: StatusBarProps) {
   const whisperColor =
     whisperStatus === "ready"
       ? "#22c55e"
@@ -85,7 +100,9 @@ export function StatusBar({ whisperStatus, ollamaStatus, micStatus, modelName }:
       </div>
 
       <div className="text-white/20">
-        whisper.cpp (base) + {modelName}
+        {whisperRuntimeReady && whisperEngine && whisperBackend
+          ? `${whisperEngine} (${whisperModel}, ${whisperGpuEnabled ? `GPU ${whisperBackend}` : "CPU"}) + ${modelName}`
+          : `Whisper 미초기화 (${whisperModel}) + ${modelName}`}
       </div>
     </div>
   );

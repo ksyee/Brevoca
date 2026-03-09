@@ -29,7 +29,7 @@
 | 기능 | 설명 |
 |------|------|
 | 🎤 **실시간 녹음** | 마이크 선택 및 실시간 음성 캡처 |
-| 📝 **음성→텍스트 (STT)** | whisper.cpp로 5초 단위 실시간 자막 생성 |
+| 📝 **음성→텍스트 (STT)** | `faster-whisper` 우선, 실패 시 `whisper.cpp` 폴백 |
 | 🤖 **AI 회의록** | Ollama 로컬 LLM이 회의 내용을 분석하여 체계적인 회의록 자동 생성 |
 | 🔒 **100% 로컬 처리** | 모든 음성·텍스트 데이터가 내 컴퓨터에서만 처리됨 |
 | 🌐 **다국어 지원** | 한국어, English, 日本語, 中文 음성 인식 |
@@ -66,6 +66,7 @@
 ### 사전 요구사항
 
 - **Node.js** 18+ 
+- **Python** 3.10+
 - **Ollama** 설치 및 실행 ([ollama.com](https://ollama.com/download))
 
 ```bash
@@ -87,8 +88,8 @@ npm install --legacy-peer-deps
 npm run dev
 ```
 
-> 💡 **첫 실행 시** Whisper base 모델(~150MB)이 자동으로 다운로드됩니다.  
-> 저장 위치: `%APPDATA%/scriba/models/`
+> 💡 앱은 실행 시 `python/requirements-stt.txt`를 기준으로 Python STT 의존성 자동 설치를 먼저 시도합니다.  
+> 자동 설치가 실패하면 앱은 `whisper.cpp` 백엔드로 자동 폴백합니다.
 
 ### 프로덕션 빌드
 
@@ -110,10 +111,19 @@ npm run build
 |------|------|--------|
 | **마이크** | 시스템에 연결된 오디오 입력 장치 | 기본 장치 |
 | **인식 언어** | 한국어 · English · 日本語 · 中文 | 한국어 |
-| **Whisper 모델** | `base` (~150MB) · `small` (~500MB) · `medium` (~1.5GB) | base |
+| **Whisper 모델** | `base` · `small` · `medium` · `turbo` · `large-v3` | small |
 | **Ollama 모델** | 설치된 Ollama 모델 자동 감지 | qwen2.5:3b |
 
-> ⚡ CPU만으로도 동작합니다. GPU가 없어도 `base` 모델과 `qwen2.5:3b`으로 원활하게 사용 가능합니다.
+> ⚡ `turbo`, `large-v3`는 `faster-whisper` 백엔드에서 권장됩니다. `whisper.cpp` 폴백은 `tiny/base/small/medium`까지만 지원합니다.
+
+## STT 백엔드
+
+- 기본 동작: `faster-whisper` 우선, 실패 시 `whisper.cpp` 폴백
+- 첫 실행: Python 의존성이 없으면 앱이 자동으로 `pip install -r python/requirements-stt.txt`를 시도
+- 강제 지정: `SCRIBA_STT_ENGINE=auto|faster-whisper|whisper.cpp`
+- Python 경로 지정: `SCRIBA_PYTHON_PATH=python`
+- faster-whisper 장치 지정: `SCRIBA_FASTER_WHISPER_DEVICE=cuda|cpu`
+- faster-whisper compute type 지정: `SCRIBA_FASTER_WHISPER_COMPUTE_TYPE=float16|int8|int8_float16`
 
 ## 📁 프로젝트 구조
 

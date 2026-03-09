@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { TitleBar } from "./components/title-bar";
 import { RecordingControl } from "./components/recording-control";
 import { TranscriptPanel } from "./components/transcript-panel";
@@ -9,13 +9,22 @@ import { motion, AnimatePresence } from "motion/react";
 
 // Audio processing constants
 const SAMPLE_RATE = 16000;
-const CHUNK_DURATION_SEC = 3; // Shorter chunks improve perceived transcription latency
+const CHUNK_DURATION_SEC = 3; // Keep realtime latency low now that GPU decoding is available
 // Pre-allocated ring buffer: 10 seconds at 96kHz (generous upper bound)
 const AUDIO_RING_BUFFER_SIZE = 96000 * 10;
 // Hard cap to prevent unbounded renderer memory growth if Whisper falls behind.
 const MAX_AUDIO_RING_BUFFER_SIZE = 96000 * 30;
 const AUDIO_WORKLET_CHUNK_SIZE = 2048;
 const audioCaptureWorkletUrl = new URL("../worklets/audio-capture.worklet.js", import.meta.url);
+const DEFAULT_OLLAMA_MODEL = "qwen2.5:3b";
+const RECOMMENDED_OLLAMA_MODELS = [
+  { id: "qwen2.5:7b-instruct", label: "qwen2.5:7b-instruct (저사양)" },
+  { id: "qwen2.5:14b", label: "qwen2.5:14b (균형)" },
+  { id: "qwen2.5:32b", label: "qwen2.5:32b (성능우선)" },
+  { id: "gemma3:12b", label: "gemma3:12b (균형)" },
+  { id: "mistral-small3.1", label: "mistral-small3.1 (균형)" },
+  { id: "qwen2.5:3b", label: "qwen2.5:3b (초저사양)" },
+] as const;
 
 interface AudioRingBuffer {
   buffer: Float32Array;
@@ -38,14 +47,30 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [selectedModel, setSelectedModel] = useState("qwen2.5:3b");
   const [selectedLang, setSelectedLang] = useState("ko");
-  const [whisperModel, setWhisperModel] = useState("base");
-  const [availableModels, setAvailableModels] = useState<string[]>(["qwen2.5:3b"]);
+  const [whisperModel, setWhisperModel] = useState("turbo");
+  const [transcriptionHint, setTranscriptionHint] = useState("");
+  const [whisperEngine, setWhisperEngine] = useState<string | null>(null);
+  const [whisperBackend, setWhisperBackend] = useState<string | null>(null);
+  const [whisperGpuEnabled, setWhisperGpuEnabled] = useState(false);
+  const [whisperRuntimeReady, setWhisperRuntimeReady] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [micStatus, setMicStatus] = useState<"connected" | "disconnected">("disconnected");
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicId, setSelectedMicId] = useState<string>("");
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [fileProcessProgress, setFileProcessProgress] = useState<number | null>(null);
+  const [isPullingOllamaModel, setIsPullingOllamaModel] = useState(false);
+  const [ollamaPullStatus, setOllamaPullStatus] = useState<string | null>(null);
+  const ollamaHasModels = availableModels.length > 0;
+  const ollamaModelOptions = useMemo(
+    () => Array.from(new Set([...availableModels, ...RECOMMENDED_OLLAMA_MODELS.map((model) => model.id)])),
+    [availableModels]
+  );
+  const selectedModelInstalled = selectedModel ? availableModels.includes(selectedModel) : false;
+  const getOllamaModelLabel = useCallback((model: string) => {
+    return RECOMMENDED_OLLAMA_MODELS.find((item) => item.id === model)?.label || model;
+  }, []);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const entryIdRef = useRef(0);
@@ -83,6 +108,16 @@ export default function App() {
     const s = totalSeconds % 60;
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   }, []);
+
+  const buildTranscriptionPrompt = useCallback(
+    (recentText?: string) => {
+      const normalizedHint = transcriptionHint.replace(/\s+/g, " ").trim();
+      const normalizedRecent = recentText?.replace(/\s+/g, " ").trim();
+      const prompt = [normalizedHint, normalizedRecent].filter(Boolean).join(" ");
+      return prompt || undefined;
+    },
+    [transcriptionHint]
+  );
 
   const getChunkInputSampleCount = useCallback(() => {
     const sampleRate = audioContextRef.current?.sampleRate || inputSampleRateRef.current;
@@ -243,6 +278,23 @@ export default function App() {
     });
   }, []);
 
+  const refreshOllamaModels = useCallback(async () => {
+    if (!window.electronAPI) return [];
+
+    const models = await window.electronAPI.ollamaModels();
+    setAvailableModels(models);
+    setSelectedModel((prev) => {
+      if (prev) {
+        return prev;
+      }
+      if (models.length > 0) {
+        return models[0];
+      }
+      return DEFAULT_OLLAMA_MODEL;
+    });
+    return models;
+  }, []);
+
   // Check Ollama connection on mount (fetch models only once per connection)
   useEffect(() => {
     let modelsLoaded = false;
@@ -253,9 +305,8 @@ export default function App() {
         setOllamaStatus(connected ? "connected" : "disconnected");
 
         if (connected && !modelsLoaded) {
-          const models = await window.electronAPI.ollamaModels();
+          const models = await refreshOllamaModels();
           if (models.length > 0) {
-            setAvailableModels(models);
             modelsLoaded = true;
           }
         } else if (!connected) {
@@ -267,7 +318,7 @@ export default function App() {
     checkOllama();
     const interval = setInterval(checkOllama, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshOllamaModels]);
 
   // Check microphone availability and list devices
   useEffect(() => {
@@ -317,11 +368,19 @@ export default function App() {
       const result = await window.electronAPI.whisperInit(whisperModel);
       if (result.success) {
         whisperInitializedModelRef.current = whisperModel;
+        setWhisperEngine(result.runtime?.engine ?? "unknown");
+        setWhisperBackend(result.runtime?.backend ?? "cpu");
+        setWhisperGpuEnabled(result.runtime?.gpuEnabled ?? false);
+        setWhisperRuntimeReady(true);
         setWhisperStatus("ready");
         return true;
       }
 
       console.error("Whisper init failed:", result.error);
+      setWhisperEngine(null);
+      setWhisperBackend(null);
+      setWhisperGpuEnabled(false);
+      setWhisperRuntimeReady(false);
       setWhisperStatus("inactive");
       return false;
     })();
@@ -339,6 +398,10 @@ export default function App() {
 
   // Re-init Whisper if model changes while already initialized
   useEffect(() => {
+    if (whisperInitializedModelRef.current !== whisperModel) {
+      setWhisperRuntimeReady(false);
+    }
+
     if (
       whisperInitializedModelRef.current &&
       whisperInitializedModelRef.current !== whisperModel &&
@@ -402,7 +465,7 @@ export default function App() {
           const result = await window.electronAPI.whisperTranscribe(
             pcmBuffer,
             selectedLang,
-            recentText || undefined
+            buildTranscriptionPrompt(recentText)
           );
 
           if (result.success && result.text && result.text.trim()) {
@@ -428,7 +491,7 @@ export default function App() {
 
     processingChunkPromiseRef.current = processingPromise;
     return processingPromise;
-  }, [drainAudioRing, formatTime, getAudioRingLength, getChunkInputSampleCount, isRecording, resampleAndConvertToPCM16, selectedLang]);
+  }, [buildTranscriptionPrompt, drainAudioRing, formatTime, getAudioRingLength, getChunkInputSampleCount, isRecording, resampleAndConvertToPCM16, selectedLang]);
 
   const handleCapturedAudioChunk = useCallback(
     (audioData: Float32Array) => {
@@ -648,6 +711,16 @@ export default function App() {
   // Generate minutes via Ollama (with batched streaming updates)
   const generateMinutes = useCallback(async () => {
     if (!window.electronAPI || fullTranscriptRef.current.length === 0) return;
+    if (ollamaStatus !== "connected") {
+      setErrorMessage("Ollama 연결 대기 중입니다. 잠시 후 다시 시도해주세요.");
+      setTimeout(() => setErrorMessage(null), 5000);
+      return;
+    }
+    if (!ollamaHasModels || !selectedModel) {
+      setErrorMessage("설치된 Ollama 모델이 없습니다. 먼저 모델을 내려받아 주세요.");
+      setTimeout(() => setErrorMessage(null), 5000);
+      return;
+    }
 
     window.electronAPI.removeOllamaListeners();
     if (minutesRafRef.current !== null) {
@@ -697,7 +770,7 @@ export default function App() {
       setMinutesContent("회의록 생성에 실패했습니다: " + (result.error || "알 수 없는 오류"));
       window.electronAPI.removeOllamaListeners();
     }
-  }, [selectedModel]);
+  }, [ollamaHasModels, ollamaStatus, selectedModel]);
 
   // Handle file upload: open native dialog and send file path to backend for ffmpeg decoding
   const handleFileUpload = useCallback(async () => {
@@ -725,7 +798,7 @@ export default function App() {
     setWhisperStatus("processing");
 
     // Listen to progress updates
-    window.electronAPI.onWhisperFileProgress((progress, text) => {
+    window.electronAPI.onWhisperFileProgress((progress, text, startSeconds) => {
       if (progress >= 0 && progress <= 100) {
         setFileProcessProgress(progress);
       }
@@ -736,7 +809,7 @@ export default function App() {
           ...prev,
           {
             id: entryIdRef.current++,
-            time: formatTime(0),
+            time: formatTime(Math.max(0, Math.floor(startSeconds ?? 0))),
             text,
           },
         ]);
@@ -744,10 +817,37 @@ export default function App() {
     });
 
     try {
-      const result = await window.electronAPI.whisperTranscribeFile(filePath, selectedLang);
+      const result = await window.electronAPI.whisperTranscribeFile(
+        filePath,
+        selectedLang,
+        buildTranscriptionPrompt()
+      );
 
       if (!result.success) {
         throw new Error(result.error);
+      }
+
+      const finalText = result.text?.trim() ?? "";
+      if (finalText) {
+        const normalizedFinalText = finalText
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const normalizedProgressText = fullTranscriptRef.current
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+        if (normalizedFinalText.join("\n") !== normalizedProgressText.join("\n")) {
+          fullTranscriptRef.current = normalizedFinalText;
+          entryIdRef.current = normalizedFinalText.length;
+          setTranscriptEntries(
+            normalizedFinalText.map((text, index) => ({
+              id: index,
+              time: formatTime(0),
+              text,
+            }))
+          );
+        }
       }
 
       setWhisperStatus("ready");
@@ -763,7 +863,7 @@ export default function App() {
       setFileProcessProgress(null);
       window.electronAPI.removeWhisperListeners();
     }
-  }, [selectedLang, formatTime, ensureWhisperReady]);
+  }, [buildTranscriptionPrompt, selectedLang, formatTime, ensureWhisperReady]);
 
   const clearTranscript = useCallback(() => {
     setTranscriptEntries([]);
@@ -774,6 +874,68 @@ export default function App() {
   const copyMinutes = useCallback(() => {
     navigator.clipboard.writeText(minutesContent);
   }, [minutesContent]);
+
+  const downloadOllama = useCallback(() => {
+    window.open("https://ollama.com/download", "_blank", "noopener,noreferrer");
+  }, []);
+
+  const downloadOllamaModel = useCallback(async (modelName?: string) => {
+    if (!window.electronAPI) return;
+    if (ollamaStatus !== "connected") {
+      setErrorMessage("Ollama 연결이 먼저 필요합니다.");
+      setTimeout(() => setErrorMessage(null), 5000);
+      return;
+    }
+
+    const modelToDownload = modelName || selectedModel || DEFAULT_OLLAMA_MODEL;
+    setIsPullingOllamaModel(true);
+    setOllamaPullStatus(`${modelToDownload} 다운로드를 시작합니다...`);
+    window.electronAPI.removeOllamaPullListeners();
+    window.electronAPI.onOllamaPullProgress((progress) => {
+      const ratio =
+        typeof progress.completed === "number" &&
+        typeof progress.total === "number" &&
+        progress.total > 0
+          ? Math.min(100, Math.round((progress.completed / progress.total) * 100))
+          : null;
+
+      setOllamaPullStatus(ratio !== null ? `${progress.status} (${ratio}%)` : progress.status);
+    });
+    window.electronAPI.onOllamaPullDone(() => {
+      setOllamaPullStatus(`${modelToDownload} 다운로드가 완료되었습니다.`);
+      window.electronAPI.removeOllamaPullListeners();
+    });
+
+    try {
+      const result = await window.electronAPI.ollamaPullModel(modelToDownload);
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+
+      const models = await refreshOllamaModels();
+      if (models.includes(modelToDownload)) {
+        setSelectedModel(modelToDownload);
+      }
+    } catch (error: any) {
+      setOllamaPullStatus(null);
+      setErrorMessage(`모델 다운로드에 실패했습니다: ${error.message || "알 수 없는 오류"}`);
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setIsPullingOllamaModel(false);
+      window.electronAPI.removeOllamaPullListeners();
+    }
+  }, [ollamaStatus, refreshOllamaModels, selectedModel]);
+
+  const handleOllamaModelChange = useCallback(
+    (nextModel: string) => {
+      setSelectedModel(nextModel);
+
+      if (!availableModels.includes(nextModel) && !isPullingOllamaModel) {
+        void downloadOllamaModel(nextModel);
+      }
+    },
+    [availableModels, downloadOllamaModel, isPullingOllamaModel]
+  );
 
   const downloadMinutes = useCallback(() => {
     const blob = new Blob([minutesContent], { type: "text/markdown" });
@@ -834,6 +996,12 @@ export default function App() {
             >
               <span className="text-white/30">모델</span>
               <span className="text-white/60">whisper-{whisperModel}</span>
+              <span className="text-white/20">/</span>
+              <span className="text-white/50">
+                {whisperRuntimeReady && whisperEngine && whisperBackend
+                  ? `${whisperEngine} · ${whisperGpuEnabled ? `GPU ${whisperBackend}` : whisperBackend.toUpperCase()}`
+                  : "미초기화"}
+              </span>
             </div>
             <div
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
@@ -939,6 +1107,8 @@ export default function App() {
                       <option value="base">base (~150MB)</option>
                       <option value="small">small (~500MB)</option>
                       <option value="medium">medium (~1.5GB)</option>
+                      <option value="turbo">turbo (~6GB VRAM 권장)</option>
+                      <option value="large-v3">large-v3 (~10GB VRAM 권장)</option>
                     </select>
                     <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none" />
                   </div>
@@ -952,22 +1122,50 @@ export default function App() {
                   <div className="relative">
                     <select
                       value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
+                      onChange={(e) => handleOllamaModelChange(e.target.value)}
                       className="w-full appearance-none px-3 py-2 rounded-lg text-white/70 cursor-pointer outline-none"
                       style={{
                         background: "rgba(255,255,255,0.05)",
                         border: "1px solid rgba(255,255,255,0.08)",
                         fontSize: "13px",
+                        color: selectedModelInstalled ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.4)",
                       }}
                     >
-                      {availableModels.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
+                      {ollamaModelOptions.map((model) => {
+                        const installed = availableModels.includes(model);
+                        return (
+                          <option
+                            key={model}
+                            value={model}
+                            style={{
+                              color: installed ? "#ffffff" : "rgba(255,255,255,0.45)",
+                              backgroundColor: "#0c0c14",
+                            }}
+                          >
+                            {getOllamaModelLabel(model)}
+                          </option>
+                        );
+                      })}
                     </select>
                     <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 pointer-events-none" />
                   </div>
+                </div>
+
+                <div className="col-span-4 flex flex-col gap-2">
+                  <label className="text-white/30" style={{ fontSize: "11px" }}>
+                    전사 힌트
+                  </label>
+                  <input
+                    value={transcriptionHint}
+                    onChange={(e) => setTranscriptionHint(e.target.value)}
+                    placeholder="예: 작업일보, 작업지시, 툴 체인지, 설비 이상, 자재결품, 가부족, 미납, 종품검사"
+                    className="w-full px-3 py-2 rounded-lg text-white/70 outline-none"
+                    style={{
+                      background: "rgba(255,255,255,0.05)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      fontSize: "13px",
+                    }}
+                  />
                 </div>
               </div>
             </motion.div>
@@ -999,7 +1197,18 @@ export default function App() {
               content={minutesContent}
               isGenerating={isGeneratingMinutes}
               hasTranscript={transcriptEntries.length > 0}
+              ollamaConnected={ollamaStatus === "connected"}
+              ollamaHasModels={ollamaHasModels}
+              selectedModelInstalled={selectedModelInstalled}
+              isPullingModel={isPullingOllamaModel}
+              modelPullStatus={ollamaPullStatus}
+              downloadModelName={getOllamaModelLabel(selectedModel || DEFAULT_OLLAMA_MODEL)}
               onGenerate={generateMinutes}
+              onDownloadOllama={
+                ollamaStatus === "connected"
+                  ? () => downloadOllamaModel(selectedModel || DEFAULT_OLLAMA_MODEL)
+                  : downloadOllama
+              }
               onCopy={copyMinutes}
               onDownload={downloadMinutes}
             />
@@ -1011,6 +1220,11 @@ export default function App() {
         whisperStatus={whisperStatus}
         ollamaStatus={ollamaStatus}
         micStatus={micStatus}
+        whisperModel={whisperModel}
+        whisperEngine={whisperEngine}
+        whisperBackend={whisperBackend}
+        whisperGpuEnabled={whisperGpuEnabled}
+        whisperRuntimeReady={whisperRuntimeReady}
         modelName={selectedModel}
       />
 

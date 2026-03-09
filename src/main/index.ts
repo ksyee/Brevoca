@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { WhisperService } from './services/whisper'
 import { OllamaService } from './services/ollama'
+import { FasterWhisperService } from './services/faster-whisper'
 
 let mainWindow: BrowserWindow | null = null
 let whisperService: WhisperService | null = null
@@ -79,7 +80,10 @@ function setupWhisperIPC(): void {
     try {
       whisperService = new WhisperService()
       await whisperService.init(modelName)
-      return { success: true }
+      return {
+        success: true,
+        runtime: whisperService.getRuntimeInfo(),
+      }
     } catch (error: any) {
       console.error('Whisper init error:', error)
       return { success: false, error: error.message }
@@ -98,16 +102,16 @@ function setupWhisperIPC(): void {
     }
   })
 
-  ipcMain.handle('whisper:transcribeFile', async (_event, filePath: string, lang: string) => {
+  ipcMain.handle('whisper:transcribeFile', async (_event, filePath: string, lang: string, prompt?: string) => {
     if (!whisperService) {
       return { success: false, error: 'Whisper not initialized' }
     }
     try {
-      const text = await whisperService.transcribeFile(filePath, lang, (progress, newText) => {
+      const text = await whisperService.transcribeFile(filePath, lang, (progress, newText, startSeconds) => {
         if (mainWindow) {
-          mainWindow.webContents.send('whisper:fileProgress', progress, newText)
+          mainWindow.webContents.send('whisper:fileProgress', progress, newText, startSeconds)
         }
-      })
+      }, prompt)
       return { success: true, text }
     } catch (error: any) {
       return { success: false, error: error.message }
@@ -116,7 +120,7 @@ function setupWhisperIPC(): void {
 
   ipcMain.handle('whisper:dispose', async () => {
     if (whisperService) {
-      whisperService.dispose()
+      await whisperService.dispose()
       whisperService = null
     }
     return { success: true }
@@ -144,6 +148,18 @@ function setupOllamaIPC(): void {
   ipcMain.handle('ollama:models', async () => {
     return await ollamaService.getModels()
   })
+
+  ipcMain.handle('ollama:pull', async (event, model: string) => {
+    try {
+      await ollamaService.pullModel(model, (progress) => {
+        event.sender.send('ollama:pullProgress', progress)
+      })
+      event.sender.send('ollama:pullDone')
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  })
 }
 
 app.whenReady().then(() => {
@@ -154,6 +170,8 @@ app.whenReady().then(() => {
   setupOllamaIPC()
 
   createWindow()
+  FasterWhisperService.warmup()
+  ollamaService.warmup()
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -162,8 +180,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (whisperService) {
-    whisperService.dispose()
+    void whisperService.dispose()
   }
+  ollamaService.dispose()
   if (process.platform !== 'darwin') {
     app.quit()
   }
