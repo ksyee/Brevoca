@@ -1,7 +1,7 @@
 [project]
-name = "scriba-api"
+name = "brevoca-api"
 version = "0.1.0"
-description = "FastAPI backend for Scriba web service"
+description = "FastAPI backend for Brevoca web service"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1.0",

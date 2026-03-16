@@ -25,7 +25,7 @@ export default function Landing() {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--mint-500)] to-[var(--sky-500)] flex items-center justify-center">
               <FileText className="w-5 h-5 text-[var(--graphite-950)]" />
             </div>
-            <span className="text-xl font-semibold">Scriba</span>
+            <span className="text-xl font-semibold">Brevoca</span>
           </div>
           <div className="flex items-center gap-4">
             <Link
@@ -76,7 +76,7 @@ export default function Landing() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
         >
-          오디오를 업로드하면 Scriba가 전사, 요약, 결정사항, 액션아이템을 자동으로 정리합니다.
+          오디오를 업로드하면 Brevoca가 전사, 요약, 결정사항, 액션아이템을 자동으로 정리합니다.
           <br />
           제조/현장 회의에 특화된 실무 도구입니다.
         </motion.p>
@@ -158,7 +158,7 @@ export default function Landing() {
           <div className="flex items-center justify-between text-sm text-[var(--text-secondary)]">
             <div className="flex items-center gap-2">
               <FileText className="w-4 h-4" />
-              <span>Scriba © 2026</span>
+              <span>Brevoca © 2026</span>
             </div>
             <div className="flex items-center gap-6">
               <a href="#" className="hover:text-[var(--text-primary)] transition-colors">문서</a>

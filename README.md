@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ Scriba
+# 🎙️ Brevoca
 
 **AI 회의록 자동 생성 서비스 워크스페이스**
 
@@ -12,7 +12,7 @@ JavaScript 패키지는 pnpm workspace로 관리하고, Python 서비스는 각 
 
 <br />
 
-<img src="docs/screenshot.png" alt="Scriba Screenshot" width="720" />
+<img src="docs/screenshot.png" alt="Brevoca Screenshot" width="720" />
 
 <br />
 
@@ -80,8 +80,8 @@ ollama pull qwen2.5:3b
 
 ```bash
 # 저장소 클론
-git clone https://github.com/ksyee/Scriba.git
-cd Scriba
+git clone https://github.com/ksyee/Brevoca.git
+cd Brevoca
 
 # 의존성 설치
 pnpm install
@@ -140,10 +140,10 @@ make dev-worker
 
 - 기본 동작: `faster-whisper` 우선, 실패 시 `whisper.cpp` 폴백
 - 첫 실행: Python 의존성이 없으면 앱이 자동으로 `pip install -r apps/desktop/python/requirements-stt.txt`를 시도
-- 강제 지정: `SCRIBA_STT_ENGINE=auto|faster-whisper|whisper.cpp`
-- Python 경로 지정: `SCRIBA_PYTHON_PATH=python`
-- faster-whisper 장치 지정: `SCRIBA_FASTER_WHISPER_DEVICE=cuda|cpu`
-- faster-whisper compute type 지정: `SCRIBA_FASTER_WHISPER_COMPUTE_TYPE=float16|int8|int8_float16`
+- 강제 지정: `BREVOCA_STT_ENGINE=auto|faster-whisper|whisper.cpp`
+- Python 경로 지정: `BREVOCA_PYTHON_PATH=python`
+- faster-whisper 장치 지정: `BREVOCA_FASTER_WHISPER_DEVICE=cuda|cpu`
+- faster-whisper compute type 지정: `BREVOCA_FASTER_WHISPER_COMPUTE_TYPE=float16|int8|int8_float16`
 
 ## 📁 프로젝트 구조
 
@@ -187,7 +187,7 @@ infra/                         # 로컬 인프라 구성
 <details>
 <summary><strong>Whisper 모델 로딩 실패</strong></summary>
 
-- `%APPDATA%/scriba/models/` 폴더의 모델 파일이 손상되지 않았는지 확인
+- `%APPDATA%/brevoca/models/` 폴더의 모델 파일이 손상되지 않았는지 확인
 - 모델 파일 삭제 후 앱 재시작하면 자동으로 다시 다운로드됩니다
 </details>
 

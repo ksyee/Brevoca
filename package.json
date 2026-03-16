@@ -1,19 +1,19 @@
 {
-  "name": "@scriba/workspace",
+  "name": "@brevoca/workspace",
   "version": "1.0.0",
   "private": true,
-  "description": "Scriba workspace",
+  "description": "Brevoca workspace",
   "packageManager": "pnpm@10.28.0",
   "scripts": {
     "dev": "pnpm dev:web",
-    "dev:desktop": "pnpm --filter @scriba/desktop dev",
-    "dev:web": "pnpm --filter @scriba/web dev",
+    "dev:desktop": "pnpm --filter @brevoca/desktop dev",
+    "dev:web": "pnpm --filter @brevoca/web dev",
     "dev:api": "python3 -m uvicorn app.main:app --reload --app-dir apps/api",
     "dev:worker": "python3 -m celery -A worker.celery_app.celery_app worker --workdir workers/ai",
     "build": "pnpm build:web",
-    "build:desktop": "pnpm --filter @scriba/desktop build",
-    "build:web": "pnpm --filter @scriba/web build",
-    "start:desktop": "pnpm --filter @scriba/desktop start"
+    "build:desktop": "pnpm --filter @brevoca/desktop build",
+    "build:web": "pnpm --filter @brevoca/web build",
+    "start:desktop": "pnpm --filter @brevoca/desktop start"
   }
 }
 

@@ -279,7 +279,7 @@ ${transcript}`
     this.startupPromise = (async () => {
       const executablePath = this.resolveExecutablePath()
       if (!executablePath) {
-        this.lastStartupError = 'Ollama 실행 파일을 찾을 수 없습니다. Ollama를 설치하거나 SCRIBA_OLLAMA_PATH를 설정하세요.'
+        this.lastStartupError = 'Ollama 실행 파일을 찾을 수 없습니다. Ollama를 설치하거나 BREVOCA_OLLAMA_PATH를 설정하세요.'
         return false
       }
 
@@ -351,7 +351,7 @@ ${transcript}`
       return this.executablePath
     }
 
-    const envPath = process.env.SCRIBA_OLLAMA_PATH?.trim()
+    const envPath = process.env.BREVOCA_OLLAMA_PATH?.trim()
     if (envPath && fs.existsSync(envPath)) {
       this.executablePath = envPath
       return this.executablePath

@@ -7,7 +7,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Scriba Design System - Quiet Control Room */
+  /* Brevoca Design System - Quiet Control Room */
   /* Primary Palette */
   --bg-canvas: #08111f;
   --bg-surface: rgba(15, 23, 40, 0.78);

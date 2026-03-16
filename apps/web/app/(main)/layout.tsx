@@ -61,7 +61,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--mint-500)] to-[var(--sky-500)] flex items-center justify-center">
               <FileText className="w-5 h-5 text-[var(--graphite-950)]" />
             </div>
-            <span className="text-xl font-semibold">Scriba</span>
+            <span className="text-xl font-semibold">Brevoca</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}
@@ -104,7 +104,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Sidebar Footer */}
         <div className="p-4 border-t border-[var(--line-soft)]">
           <div className="text-xs text-[var(--text-secondary)] px-4">
-            Scriba v1.0 Beta
+            Brevoca v1.0 Beta
           </div>
         </div>
       </aside>

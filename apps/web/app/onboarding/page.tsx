@@ -72,7 +72,7 @@ export default function Onboarding() {
               <div className="w-20 h-20 rounded-full bg-gradient-to-br from-[var(--mint-500)] to-[var(--sky-500)] flex items-center justify-center mx-auto mb-6">
                 <FileText className="w-10 h-10 text-[var(--graphite-950)]" />
               </div>
-              <h1 className="text-3xl font-bold mb-3">Scriba에 오신 것을 환영합니다</h1>
+              <h1 className="text-3xl font-bold mb-3">Brevoca에 오신 것을 환영합니다</h1>
               <p className="text-[var(--text-secondary)] text-lg mb-8">
                 회의를 조용히 정리하는 관제실,<br />
                 당신의 회의를 자동으로 분석하고 요약합니다
@@ -171,7 +171,7 @@ export default function Onboarding() {
               </div>
               <h2 className="text-2xl font-bold mb-3">모든 준비가 완료되었습니다!</h2>
               <p className="text-[var(--text-secondary)] mb-4">
-                이제 첫 회의를 업로드하고 Scriba의 강력함을 경험해보세요
+                이제 첫 회의를 업로드하고 Brevoca의 강력함을 경험해보세요
               </p>
               <div className="flex gap-1 justify-center">
                 <div className="w-2 h-2 rounded-full bg-[var(--mint-500)] animate-pulse" />

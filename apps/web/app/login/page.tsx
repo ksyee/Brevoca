@@ -45,7 +45,7 @@ export default function Login() {
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--mint-500)] to-[var(--sky-500)] flex items-center justify-center">
             <FileText className="w-6 h-6 text-[var(--graphite-950)]" />
           </div>
-          <span className="text-2xl font-semibold">Scriba</span>
+          <span className="text-2xl font-semibold">Brevoca</span>
         </Link>
 
         {/* Card */}

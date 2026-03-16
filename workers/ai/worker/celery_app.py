@@ -3,7 +3,7 @@ from celery import Celery
 from worker.config import settings
 
 celery_app = Celery(
-    "scriba-ai",
+    "brevoca-ai",
     broker=settings.broker_url,
     backend=settings.result_backend,
 )

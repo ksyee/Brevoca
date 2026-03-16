@@ -1,7 +1,7 @@
 [project]
-name = "scriba-ai-worker"
+name = "brevoca-ai-worker"
 version = "0.1.0"
-description = "Celery worker for Scriba AI pipeline"
+description = "Celery worker for Brevoca AI pipeline"
 requires-python = ">=3.11"
 dependencies = [
   "celery[redis]>=5.4,<6.0",

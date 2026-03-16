@@ -11,7 +11,7 @@ export function TitleBar() {
           <div className="w-2 h-2 rounded-full bg-white/90" />
         </div>
         <span className="text-white/70 tracking-wide" style={{ fontSize: '13px' }}>
-          Scriba
+          Brevoca
         </span>
         <span className="text-white/25 ml-1" style={{ fontSize: '11px' }}>v1.0.0</span>
       </div>

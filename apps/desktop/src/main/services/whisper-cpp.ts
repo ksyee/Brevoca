@@ -351,7 +351,7 @@ export class WhisperCppService implements TranscriptionBackend {
 
   private getBackendCandidates(): WhisperBackendCandidate[] {
     const packageBase = `@fugood/node-whisper-${process.platform}-${process.arch}`
-    const preferredBackend = process.env.SCRIBA_WHISPER_BACKEND?.trim().toLowerCase()
+    const preferredBackend = process.env.BREVOCA_WHISPER_BACKEND?.trim().toLowerCase()
 
     const candidates: WhisperBackendCandidate[] = []
 
@@ -393,7 +393,7 @@ export class WhisperCppService implements TranscriptionBackend {
 
     const preferred = candidates.find((candidate) => candidate.backend === preferredBackend)
     if (!preferred) {
-      console.warn(`Unknown SCRIBA_WHISPER_BACKEND=${preferredBackend}, falling back to auto`)
+      console.warn(`Unknown BREVOCA_WHISPER_BACKEND=${preferredBackend}, falling back to auto`)
       return this.dedupeBackendCandidates(candidates)
     }
 

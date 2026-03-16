@@ -137,7 +137,7 @@ export class FasterWhisperService implements TranscriptionBackend {
       this.dependencyState = 'checking'
       this.dependencyBootstrapError = null
 
-      const pythonExecutable = process.env.SCRIBA_PYTHON_PATH?.trim() || 'python'
+      const pythonExecutable = process.env.BREVOCA_PYTHON_PATH?.trim() || 'python'
       const requirementsPath = this.resolveRequirementsPath()
 
       const dependenciesInstalled = await this.runPythonCommand(
@@ -405,7 +405,7 @@ export class FasterWhisperService implements TranscriptionBackend {
   }
 
   private getPythonExecutable(): string {
-    return process.env.SCRIBA_PYTHON_PATH?.trim() || 'python'
+    return process.env.BREVOCA_PYTHON_PATH?.trim() || 'python'
   }
 
   private buildDependencyNotes(): string[] {

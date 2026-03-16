@@ -1,1 +1,1 @@
-"""Scriba Celery worker package."""
+"""Brevoca Celery worker package."""

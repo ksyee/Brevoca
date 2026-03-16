@@ -1,4 +1,4 @@
-# Scriba prompts
+# Brevoca prompts
 
 Prompt assets are versioned outside application code so API and worker can
 reference the same template set.

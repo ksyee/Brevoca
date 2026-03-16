@@ -4,7 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Scriba Web",
+  title: "Brevoca Web",
   description: "Production-focused AI meeting notes service",
 };
 

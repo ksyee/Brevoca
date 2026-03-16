@@ -125,7 +125,7 @@ export default function Upload() {
             </div>
 
             <h3 className="text-xl mb-2">
-              {isDragging ? "파일을 여기에 놓으세요" : "오디오를 놓으면 Scriba가 회의를 정리합니다"}
+              {isDragging ? "파일을 여기에 놓으세요" : "오디오를 놓으면 Brevoca가 회의를 정리합니다"}
             </h3>
 
             <p className="text-[var(--text-secondary)] mb-6">

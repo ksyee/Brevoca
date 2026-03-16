@@ -1,8 +1,8 @@
 {
-  "name": "@scriba/desktop",
+  "name": "@brevoca/desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Scriba desktop app",
+  "description": "Brevoca desktop app",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev --config electron.vite.config.ts",

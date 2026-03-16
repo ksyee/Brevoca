@@ -89,7 +89,7 @@ export class WhisperService implements TranscriptionBackend {
   }
 
   private getEngineOrder(): EngineName[] {
-    const preferredEngine = process.env.SCRIBA_STT_ENGINE?.trim().toLowerCase()
+    const preferredEngine = process.env.BREVOCA_STT_ENGINE?.trim().toLowerCase()
 
     if (!preferredEngine || preferredEngine === 'auto') {
       return ['faster-whisper', 'whisper.cpp']
@@ -103,7 +103,7 @@ export class WhisperService implements TranscriptionBackend {
       return ['whisper.cpp']
     }
 
-    console.warn(`Unknown SCRIBA_STT_ENGINE=${preferredEngine}, falling back to auto`)
+    console.warn(`Unknown BREVOCA_STT_ENGINE=${preferredEngine}, falling back to auto`)
     return ['faster-whisper', 'whisper.cpp']
   }
 

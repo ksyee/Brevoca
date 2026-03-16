@@ -71,7 +71,7 @@ export default function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-lg mb-2">파일 업로드</h3>
-              <p className="text-sm text-[var(--text-secondary)]">오디오를 놓으면 Scriba가 회의를 정리합니다</p>
+              <p className="text-sm text-[var(--text-secondary)]">오디오를 놓으면 Brevoca가 회의를 정리합니다</p>
             </div>
             <div className="w-12 h-12 rounded-xl bg-[var(--mint-500)]/10 flex items-center justify-center group-hover:bg-[var(--mint-500)]/20 transition-colors">
               <Upload className="w-6 h-6 text-[var(--mint-500)]" />

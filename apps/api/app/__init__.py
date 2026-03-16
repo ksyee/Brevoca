@@ -1,1 +1,1 @@
-"""Scriba API package."""
+"""Brevoca API package."""

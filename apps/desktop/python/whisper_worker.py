@@ -5,26 +5,26 @@ import sys
 import traceback
 from typing import Any
 
-REALTIME_BEAM_SIZE = int(os.environ.get("SCRIBA_REALTIME_BEAM_SIZE", "1"))
-REALTIME_BEST_OF = int(os.environ.get("SCRIBA_REALTIME_BEST_OF", "1"))
-REALTIME_VAD_FILTER = os.environ.get("SCRIBA_REALTIME_VAD_FILTER", "0").strip().lower() in {
+REALTIME_BEAM_SIZE = int(os.environ.get("BREVOCA_REALTIME_BEAM_SIZE", "1"))
+REALTIME_BEST_OF = int(os.environ.get("BREVOCA_REALTIME_BEST_OF", "1"))
+REALTIME_VAD_FILTER = os.environ.get("BREVOCA_REALTIME_VAD_FILTER", "0").strip().lower() in {
     "1",
     "true",
     "yes",
 }
-FILE_BEAM_SIZE = int(os.environ.get("SCRIBA_FILE_BEAM_SIZE", "5"))
-FILE_BEST_OF = int(os.environ.get("SCRIBA_FILE_BEST_OF", "5"))
-FILE_BATCH_SIZE_CPU = int(os.environ.get("SCRIBA_FILE_BATCH_SIZE_CPU", "8"))
-FILE_BATCH_SIZE_CUDA = int(os.environ.get("SCRIBA_FILE_BATCH_SIZE_CUDA", "32"))
-FILE_CHUNK_LENGTH_CPU = int(os.environ.get("SCRIBA_FILE_CHUNK_LENGTH_CPU", "20"))
-FILE_CHUNK_LENGTH_CUDA = int(os.environ.get("SCRIBA_FILE_CHUNK_LENGTH_CUDA", "30"))
-FILE_CONDITION_ON_PREVIOUS_TEXT = os.environ.get("SCRIBA_FILE_PREV_TEXT", "1").strip().lower() in {
+FILE_BEAM_SIZE = int(os.environ.get("BREVOCA_FILE_BEAM_SIZE", "5"))
+FILE_BEST_OF = int(os.environ.get("BREVOCA_FILE_BEST_OF", "5"))
+FILE_BATCH_SIZE_CPU = int(os.environ.get("BREVOCA_FILE_BATCH_SIZE_CPU", "8"))
+FILE_BATCH_SIZE_CUDA = int(os.environ.get("BREVOCA_FILE_BATCH_SIZE_CUDA", "32"))
+FILE_CHUNK_LENGTH_CPU = int(os.environ.get("BREVOCA_FILE_CHUNK_LENGTH_CPU", "20"))
+FILE_CHUNK_LENGTH_CUDA = int(os.environ.get("BREVOCA_FILE_CHUNK_LENGTH_CUDA", "30"))
+FILE_CONDITION_ON_PREVIOUS_TEXT = os.environ.get("BREVOCA_FILE_PREV_TEXT", "1").strip().lower() in {
     "1",
     "true",
     "yes",
 }
-CUDA_NUM_WORKERS = int(os.environ.get("SCRIBA_CUDA_NUM_WORKERS", "2"))
-CPU_NUM_WORKERS = int(os.environ.get("SCRIBA_CPU_NUM_WORKERS", "1"))
+CUDA_NUM_WORKERS = int(os.environ.get("BREVOCA_CUDA_NUM_WORKERS", "2"))
+CPU_NUM_WORKERS = int(os.environ.get("BREVOCA_CPU_NUM_WORKERS", "1"))
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -64,9 +64,9 @@ class FasterWhisperWorker:
         }
 
     def init_model(self, model_name: str) -> dict[str, Any]:
-        device = os.environ.get("SCRIBA_FASTER_WHISPER_DEVICE", "").strip().lower()
-        compute_type = os.environ.get("SCRIBA_FASTER_WHISPER_COMPUTE_TYPE", "").strip().lower()
-        device_index_env = os.environ.get("SCRIBA_FASTER_WHISPER_DEVICE_INDEX", "").strip()
+        device = os.environ.get("BREVOCA_FASTER_WHISPER_DEVICE", "").strip().lower()
+        compute_type = os.environ.get("BREVOCA_FASTER_WHISPER_COMPUTE_TYPE", "").strip().lower()
+        device_index_env = os.environ.get("BREVOCA_FASTER_WHISPER_DEVICE_INDEX", "").strip()
         cuda_device_count = self._get_cuda_device_count()
 
         if not device:
