@@ -101,7 +101,7 @@ export function ErrorState({ type, onRetry, onDismiss, onSupport }: ErrorStatePr
           label: "설정에서 API 키 확인",
           variant: "primary",
           onClick: () => {
-            window.location.href = "/app/settings";
+            window.location.href = "/settings";
           },
         },
         {

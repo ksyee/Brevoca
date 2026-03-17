@@ -1,42 +1,26 @@
 SHELL := /bin/sh
 
-.PHONY: help install-js dev-web dev-desktop dev-api dev-worker build-web build-desktop infra-up infra-down
+.PHONY: help install dev build start lint
 
 help:
 	@printf '%s\n' \
-		'install-js     Install JavaScript workspace dependencies' \
-		'dev-web        Run Next.js web app' \
-		'dev-desktop    Run Electron desktop app' \
-		'dev-api        Run FastAPI backend' \
-		'dev-worker     Run Celery worker' \
-		'build-web      Build Next.js web app' \
-		'build-desktop  Build Electron desktop app' \
-		'infra-up       Start local Postgres/Redis/MinIO' \
-		'infra-down     Stop local Postgres/Redis/MinIO'
+		'install   Install workspace dependencies' \
+		'dev       Run the Next.js web app' \
+		'build     Build the Next.js web app' \
+		'start     Start the production web server' \
+		'lint      Run the Next.js linter'
 
-install-js:
+install:
 	pnpm install
 
-dev-web:
+dev:
 	pnpm dev
 
-dev-desktop:
-	pnpm dev:desktop
+build:
+	pnpm build
 
-dev-api:
-	python3 -m uvicorn app.main:app --reload --app-dir apps/api
+start:
+	pnpm start
 
-dev-worker:
-	python3 -m celery -A worker.celery_app.celery_app worker --workdir workers/ai
-
-build-web:
-	pnpm build:web
-
-build-desktop:
-	pnpm build:desktop
-
-infra-up:
-	docker compose -f infra/docker-compose.local.yml up -d
-
-infra-down:
-	docker compose -f infra/docker-compose.local.yml down
+lint:
+	pnpm lint

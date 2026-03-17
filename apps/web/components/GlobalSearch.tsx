@@ -63,7 +63,7 @@ export function GlobalSearch() {
             {query ? (
               <div className="p-4">
                 <div className="text-sm text-[var(--text-secondary)]">
-                  "{query}" 검색 결과를 보려면 Enter를 누르세요
+                  &quot;{query}&quot; 검색 결과를 보려면 Enter를 누르세요
                 </div>
               </div>
             ) : (

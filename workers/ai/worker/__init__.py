@@ -1,1 +1,0 @@
-"""Brevoca Celery worker package."""

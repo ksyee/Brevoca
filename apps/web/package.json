@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -35,7 +35,8 @@
     "@radix-ui/react-toggle": "^1.1.10",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@brevoca/shared-types": "workspace:*",
+    "@brevoca/contracts": "workspace:*",
+    "@supabase/supabase-js": "^2.57.4",
     "@tailwindcss/postcss": "^4.2.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
@@ -62,10 +63,13 @@
     "vaul": "^1.1.2"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
     "@tailwindcss/typography": "^0.5.19",
     "@types/node": "^22.13.10",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "^15.5.12",
     "typescript": "^5.8.2"
   }
 }

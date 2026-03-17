@@ -49,3 +49,6 @@ reference-design/
 
 # pnpm
 pnpm-debug.log*
+
+# Local app data
+.brevoca-data/

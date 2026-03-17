@@ -1,121 +1,161 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Upload as UploadIcon, FileAudio, X, CheckCircle, Tag as TagIcon } from "lucide-react";
+import { CheckCircle, FileAudio, Tag as TagIcon, Upload as UploadIcon, X } from "lucide-react";
+import {
+  defaultPromptTemplateId,
+  promptTemplateLabels,
+  promptTemplateIds,
+  type PromptTemplateId,
+} from "@brevoca/contracts";
+import { toast } from "sonner";
 
-export default function Upload() {
+export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [durationSec, setDurationSec] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [title, setTitle] = useState("");
+  const [language, setLanguage] = useState("ko");
+  const [promptTemplateId, setPromptTemplateId] = useState<PromptTemplateId>(defaultPromptTemplateId);
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file && (file.type.startsWith("audio/") || file.name.match(/\.(mp3|wav|m4a|ogg)$/i))) {
-      setSelectedFile(file);
+  const resolvedTitle = useMemo(() => {
+    if (title.trim()) {
+      return title.trim();
     }
-  };
+    if (!selectedFile) {
+      return "";
+    }
+    return selectedFile.name.replace(/\.[^.]+$/, "");
+  }, [selectedFile, title]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleDrop = async (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const file = event.dataTransfer.files[0];
     if (file) {
-      setSelectedFile(file);
+      await applySelectedFile(file);
     }
   };
 
-  const handleUpload = () => {
-    if (!selectedFile) return;
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      await applySelectedFile(file);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      return;
+    }
 
     setUploading(true);
-    setUploadProgress(0);
+    setUploadProgress(10);
 
-    // Simulate upload progress
-    const interval = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            router.push("/processing/new");
-          }, 500);
-          return 100;
-        }
-        return prev + 10;
-      });
-    }, 200);
-  };
+    const progressTimer = window.setInterval(() => {
+      setUploadProgress((current) => Math.min(current + 12, 90));
+    }, 250);
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  };
-
-  const formatDuration = (file: File) => {
-    // Mock duration - in real app, would parse audio file
-    return "45:30";
-  };
-
-  const handleAddTag = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && tagInput.trim()) {
-      e.preventDefault();
-      if (!tags.includes(tagInput.trim())) {
-        setTags([...tags, tagInput.trim()]);
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("title", resolvedTitle || selectedFile.name);
+      formData.append("language", language);
+      formData.append("promptTemplateId", promptTemplateId);
+      formData.append("sourceType", "upload");
+      formData.append("tags", JSON.stringify(tags));
+      if (durationSec) {
+        formData.append("durationSec", String(durationSec));
       }
-      setTagInput("");
+
+      const response = await fetch("/api/meetings", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const payload = (await response.json()) as { jobId: string };
+      setUploadProgress(100);
+      toast.success("업로드를 시작했습니다.");
+      router.push(`/processing/${payload.jobId}`);
+    } catch (error) {
+      console.error(error);
+      toast.error("업로드에 실패했습니다.");
+      setUploading(false);
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
-  const handleRemoveTag = (tagToRemove: string) => {
-    setTags(tags.filter((tag) => tag !== tagToRemove));
+  const handleAddTag = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" || !tagInput.trim()) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTag = tagInput.trim();
+    if (!tags.includes(nextTag)) {
+      setTags((current) => [...current, nextTag]);
+    }
+    setTagInput("");
+  };
+
+  const handleRemoveTag = (target: string) => {
+    setTags((current) => current.filter((tag) => tag !== target));
+  };
+
+  const applySelectedFile = async (file: File) => {
+    if (!isSupportedAudioFile(file)) {
+      toast.error("지원하지 않는 오디오 형식입니다.");
+      return;
+    }
+
+    setSelectedFile(file);
+    setDurationSec(await getAudioDuration(file));
+    setTitle(file.name.replace(/\.[^.]+$/, ""));
   };
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">새 회의 업로드</h1>
-        <p className="text-[var(--text-secondary)]">
-          회의 오디오를 업로드하면 자동으로 전사와 요약을 생성합니다.
-        </p>
+        <p className="text-[var(--text-secondary)]">오디오를 업로드하면 OpenAI 전사와 요약이 자동으로 이어집니다.</p>
       </div>
 
-      {/* Upload Zone */}
       {!selectedFile ? (
         <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(event) => {
+            void handleDrop(event);
+          }}
           onClick={() => fileInputRef.current?.click()}
-          className={`
-            relative p-16 rounded-[var(--radius-xl)] border-2 border-dashed cursor-pointer
-            transition-all duration-200
-            ${
-              isDragging
-                ? "border-[var(--mint-500)] bg-[var(--mint-500)]/5"
-                : "border-[var(--line-strong)] bg-[var(--bg-surface)] hover:border-[var(--line-strong)] hover:bg-[var(--bg-surface-strong)]"
-            }
-          `}
+          className={`relative p-16 rounded-[var(--radius-xl)] border-2 border-dashed cursor-pointer transition-all duration-200 ${
+            isDragging
+              ? "border-[var(--mint-500)] bg-[var(--mint-500)]/5"
+              : "border-[var(--line-strong)] bg-[var(--bg-surface)] hover:border-[var(--line-strong)] hover:bg-[var(--bg-surface-strong)]"
+          }`}
         >
           <input
             ref={fileInputRef}
             type="file"
-            accept="audio/*,.mp3,.wav,.m4a,.ogg"
-            onChange={handleFileSelect}
+            accept="audio/*,.mp3,.wav,.m4a,.ogg,.webm"
+            onChange={(event) => {
+              void handleFileSelect(event);
+            }}
             className="hidden"
           />
 
@@ -128,19 +168,16 @@ export default function Upload() {
               {isDragging ? "파일을 여기에 놓으세요" : "오디오를 놓으면 Brevoca가 회의를 정리합니다"}
             </h3>
 
-            <p className="text-[var(--text-secondary)] mb-6">
-              또는 클릭하여 파일을 선택하세요
-            </p>
+            <p className="text-[var(--text-secondary)] mb-6">또는 클릭하여 파일을 선택하세요</p>
 
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--graphite-800)] text-sm text-[var(--text-secondary)]">
               <FileAudio className="w-4 h-4" />
-              <span>mp3, wav, m4a 지원</span>
+              <span>mp3, wav, m4a, webm 지원</span>
             </div>
           </div>
         </div>
       ) : (
         <div className="space-y-6">
-          {/* File Info Card */}
           <div className="p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
             <div className="flex items-start gap-4">
               <div className="w-12 h-12 rounded-xl bg-[var(--mint-500)]/10 flex items-center justify-center flex-shrink-0">
@@ -152,13 +189,16 @@ export default function Upload() {
                 <div className="flex items-center gap-4 text-sm text-[var(--text-secondary)]">
                   <span className="font-mono">{formatFileSize(selectedFile.size)}</span>
                   <span>•</span>
-                  <span className="font-mono">{formatDuration(selectedFile)}</span>
+                  <span className="font-mono">{formatDuration(durationSec)}</span>
                 </div>
               </div>
 
               {!uploading && (
                 <button
-                  onClick={() => setSelectedFile(null)}
+                  onClick={() => {
+                    setSelectedFile(null);
+                    setDurationSec(null);
+                  }}
                   className="p-2 rounded-lg hover:bg-[var(--graphite-800)] transition-colors"
                 >
                   <X className="w-5 h-5" />
@@ -187,13 +227,14 @@ export default function Upload() {
             )}
           </div>
 
-          {/* Meeting Details */}
           {!uploading && (
             <div className="p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)] space-y-4">
               <div>
                 <label className="block text-sm mb-2">회의 제목</label>
                 <input
                   type="text"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
                   placeholder="예: 제조라인 개선 회의"
                   className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors"
                 />
@@ -202,20 +243,29 @@ export default function Upload() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm mb-2">언어</label>
-                  <select className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors">
-                    <option>한국어</option>
-                    <option>English</option>
-                    <option>日本語</option>
+                  <select
+                    value={language}
+                    onChange={(event) => setLanguage(event.target.value)}
+                    className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors"
+                  >
+                    <option value="ko">한국어</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語</option>
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-sm mb-2">템플릿</label>
-                  <select className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors">
-                    <option>일반 회의</option>
-                    <option>제조/현장 회의</option>
-                    <option>브레인스토밍</option>
-                    <option>1:1 미팅</option>
+                  <select
+                    value={promptTemplateId}
+                    onChange={(event) => setPromptTemplateId(event.target.value as PromptTemplateId)}
+                    className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors"
+                  >
+                    {promptTemplateIds.map((id) => (
+                      <option key={id} value={id}>
+                        {promptTemplateLabels[id]}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -226,17 +276,11 @@ export default function Upload() {
                   <input
                     type="text"
                     value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
+                    onChange={(event) => setTagInput(event.target.value)}
                     onKeyDown={handleAddTag}
                     className="w-full px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors"
-                    placeholder="태그 추가"
+                    placeholder="태그 추가 후 Enter"
                   />
-                  <button
-                    onClick={() => handleAddTag({ key: "Enter" } as React.KeyboardEvent<HTMLInputElement>)}
-                    className="px-4 py-3 rounded-[var(--radius-md)] bg-[var(--graphite-800)] border border-[var(--line-soft)] focus:border-[var(--mint-500)] focus:outline-none transition-colors"
-                  >
-                    추가
-                  </button>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {tags.map((tag) => (
@@ -248,9 +292,9 @@ export default function Upload() {
                       <span>{tag}</span>
                       <button
                         onClick={() => handleRemoveTag(tag)}
-                        className="ml-2 p-1 rounded-full hover:bg-[var(--graphite-800)] transition-colors"
+                        className="p-1 rounded-full hover:bg-[var(--graphite-700)] transition-colors"
                       >
-                        <X className="w-4 h-4" />
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   ))}
@@ -259,48 +303,59 @@ export default function Upload() {
             </div>
           )}
 
-          {/* Actions */}
           {!uploading && (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleUpload}
-                className="flex-1 py-4 rounded-[var(--radius-md)] bg-gradient-to-r from-[var(--mint-500)] to-[var(--sky-500)] text-[var(--graphite-950)] hover:opacity-90 transition-opacity"
-              >
-                업로드 시작
-              </button>
-              <button
-                onClick={() => setSelectedFile(null)}
-                className="px-6 py-4 rounded-[var(--radius-md)] border border-[var(--line-strong)] hover:bg-[var(--bg-surface-strong)] transition-colors"
-              >
-                취소
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                void handleUpload();
+              }}
+              className="w-full px-6 py-4 rounded-[var(--radius-lg)] bg-gradient-to-r from-[var(--mint-500)] to-[var(--sky-500)] text-[var(--graphite-950)] hover:opacity-90 transition-opacity font-medium"
+            >
+              업로드하고 처리 시작
+            </button>
           )}
         </div>
       )}
-
-      {/* Info */}
-      <div className="mt-8 p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
-        <h3 className="font-medium mb-3">처리 과정</h3>
-        <div className="space-y-2 text-sm text-[var(--text-secondary)]">
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-[var(--mint-500)]" />
-            <span>1. 오디오 업로드</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-[var(--sky-500)]" />
-            <span>2. 음성을 텍스트로 전사 (약 1~3분)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-[var(--signal-orange-500)]" />
-            <span>3. AI가 요약, 결정사항, 액션아이템 추출 (약 30초~1분)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-[var(--mist-300)]" />
-            <span>4. 결과 확인 및 공유 가능</span>
-          </div>
-        </div>
-      </div>
     </div>
   );
+}
+
+async function getAudioDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const audio = document.createElement("audio");
+    const objectUrl = URL.createObjectURL(file);
+    audio.preload = "metadata";
+    audio.src = objectUrl;
+    audio.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(Number.isFinite(audio.duration) ? Math.round(audio.duration) : null);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    };
+  });
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDuration(durationSec: number | null): string {
+  if (!durationSec || durationSec < 1) {
+    return "--:--";
+  }
+
+  const minutes = Math.floor(durationSec / 60);
+  const seconds = durationSec % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function isSupportedAudioFile(file: File): boolean {
+  return file.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm)$/i.test(file.name);
 }
