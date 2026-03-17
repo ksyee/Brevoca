@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireRequestUser, requireWorkspaceId } from "@/lib/server/auth";
 import { cancelMeetingProcessing } from "@/lib/server/process-meeting";
-import { deleteMeetingForWorkspace, getStoredMeeting, getMeeting, requireWorkspaceMembership } from "@/lib/server/store";
+import { getJobForWorkspace, requireWorkspaceMembership } from "@/lib/server/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(
+export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -20,42 +20,14 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const meeting = await getMeeting(id, workspaceId);
+  const job = await getJobForWorkspace(id, workspaceId);
 
-  if (!meeting) {
-    return NextResponse.json({ error: "회의를 찾을 수 없습니다." }, { status: 404 });
+  if (!job) {
+    return NextResponse.json({ error: "작업을 찾을 수 없습니다." }, { status: 404 });
   }
 
-  return NextResponse.json(meeting);
-}
-
-export async function DELETE(
-  request: Request,
-  context: { params: Promise<{ id: string }> },
-) {
-  let workspaceId;
-  try {
-    const user = await requireRequestUser(request);
-    workspaceId = requireWorkspaceId(request);
-    await requireWorkspaceMembership(user.id, workspaceId);
-  } catch (error) {
-    return authErrorResponse(error);
-  }
-
-  const { id } = await context.params;
-  const meeting = await getStoredMeeting(id, workspaceId);
-
-  if (!meeting) {
-    return NextResponse.json({ error: "회의를 찾을 수 없습니다." }, { status: 404 });
-  }
-
-  const isProcessing = meeting.status === "uploaded" || meeting.status === "transcribing" || meeting.status === "summarizing";
-  if (isProcessing) {
-    await cancelMeetingProcessing(meeting.jobId);
-  }
-
-  await deleteMeetingForWorkspace(id, workspaceId);
-  return new NextResponse(null, { status: 204 });
+  await cancelMeetingProcessing(id);
+  return NextResponse.json({ ok: true });
 }
 
 function authErrorResponse(error: unknown) {

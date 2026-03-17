@@ -13,6 +13,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: typeof 
   summarizing: { label: "요약 중", color: "var(--sky-500)", icon: Clock },
   completed: { label: "완료", color: "var(--mint-500)", icon: CheckCircle },
   failed: { label: "실패", color: "var(--danger-500)", icon: AlertCircle },
+  canceled: { label: "중단됨", color: "var(--mist-300)", icon: AlertCircle },
 };
 
 export default function Dashboard() {
@@ -124,7 +125,7 @@ export default function Dashboard() {
                     <Link
                       key={meeting.id}
                       href={
-                        meeting.status === "completed" || meeting.status === "failed"
+                        meeting.status === "completed" || meeting.status === "failed" || meeting.status === "canceled"
                           ? `/meeting/${meeting.id}`
                           : `/processing/${meeting.jobId}`
                       }

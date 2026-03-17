@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle, ChevronRight, FileAudio, Loader2, Sparkles } from "lucide-react";
+import { CheckCircle, ChevronRight, FileAudio, Loader2, Sparkles, Trash2 } from "lucide-react";
 import type { JobRecord, ProcessingErrorType } from "@brevoca/contracts";
 import { authedFetch } from "@/lib/client/authed-fetch";
 import { ErrorState } from "@/components/ErrorState";
@@ -22,6 +22,7 @@ export default function ProcessingPage({ params }: { params: Promise<{ id: strin
   const [job, setJob] = useState<JobRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
+  const [canceling, setCanceling] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -66,6 +67,20 @@ export default function ProcessingPage({ params }: { params: Promise<{ id: strin
       }
     }
     setRetrying(false);
+  };
+
+  const handleCancelAndDelete = async () => {
+    if (!job) {
+      return;
+    }
+
+    setCanceling(true);
+    const response = await authedFetch(`/api/meetings/${job.meetingId}`, { method: "DELETE" });
+    setCanceling(false);
+
+    if (response.ok) {
+      router.replace("/dashboard");
+    }
   };
 
   if (loading || !job) {
@@ -123,11 +138,28 @@ export default function ProcessingPage({ params }: { params: Promise<{ id: strin
           <p className="text-sm text-[var(--text-secondary)] mt-3">
             {job.status === "failed"
               ? job.errorMessage || "처리 중 오류가 발생했습니다."
+              : job.status === "canceled"
+              ? "처리가 중단되었습니다."
               : job.status === "completed"
               ? "완료되었습니다. 결과 페이지로 이동합니다."
               : "처리가 완료되면 자동으로 결과 페이지로 이동합니다."}
           </p>
         </div>
+
+        {(job.status === "queued" || job.status === "processing") && (
+          <div className="mb-8 flex justify-end">
+            <button
+              onClick={() => {
+                void handleCancelAndDelete();
+              }}
+              disabled={canceling}
+              className="inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--danger-500)]/40 px-4 py-2 text-[var(--danger-500)] transition-colors hover:bg-[var(--danger-500)]/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {canceling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              <span>{canceling ? "중단 및 삭제 중..." : "처리 중단 후 삭제"}</span>
+            </button>
+          </div>
+        )}
 
         <div className="mb-8 p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
           <div className="space-y-4">
@@ -211,7 +243,7 @@ function getStepStatus(currentStep: StepId, step: StepId, jobStatus: JobRecord["
     return "complete";
   }
 
-  if (jobStatus === "completed" && step === "complete") {
+  if ((jobStatus === "completed" || jobStatus === "canceled") && step === "complete") {
     return "complete";
   }
 

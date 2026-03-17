@@ -7,6 +7,7 @@ export const meetingStatuses = [
   "summarizing",
   "completed",
   "failed",
+  "canceled",
 ] as const;
 
 export const meetingSourceTypes = ["upload", "browser_recording"] as const;
@@ -24,6 +25,13 @@ export interface MeetingSummary {
   actionItems: ActionItem[];
   openQuestions: string[];
   risks: string[];
+}
+
+export interface TranscriptSegment {
+  speaker: string | null;
+  startSec: number;
+  endSec: number;
+  text: string;
 }
 
 export type MeetingStatus = (typeof meetingStatuses)[number];
@@ -45,6 +53,7 @@ export interface MeetingRecord {
 
 export interface MeetingDetail extends MeetingRecord {
   transcriptText: string | null;
+  transcriptSegments: TranscriptSegment[] | null;
   summary: MeetingSummary | null;
   fileName: string | null;
   errorMessage?: string | null;

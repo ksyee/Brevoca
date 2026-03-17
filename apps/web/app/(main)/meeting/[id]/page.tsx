@@ -15,7 +15,7 @@ import {
   Tag,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { MeetingDetail } from "@brevoca/contracts";
+import type { MeetingDetail, TranscriptSegment } from "@brevoca/contracts";
 import { authedFetch } from "@/lib/client/authed-fetch";
 import { TagEditor } from "@/components/TagEditor";
 
@@ -163,9 +163,13 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
 
           <div className="p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
             <h2 className="text-xl mb-4">전사문</h2>
-            <article className="whitespace-pre-wrap text-[var(--text-secondary)] leading-relaxed">
-              {meeting.transcriptText ?? "전사문이 아직 생성되지 않았습니다."}
-            </article>
+            {meeting.transcriptSegments?.length ? (
+              <SpeakerTranscript segments={meeting.transcriptSegments} />
+            ) : (
+              <article className="whitespace-pre-wrap text-[var(--text-secondary)] leading-relaxed">
+                {meeting.transcriptText ?? "전사문이 아직 생성되지 않았습니다."}
+              </article>
+            )}
           </div>
         </section>
 
@@ -211,6 +215,65 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
       </div>
     </div>
   );
+}
+
+function SpeakerTranscript({ segments }: { segments: TranscriptSegment[] }) {
+  const speakerLabels = buildSpeakerLabelMap(segments);
+
+  return (
+    <div className="space-y-3">
+      {segments.map((segment, index) => {
+        const label = getTranscriptSpeakerLabel(segment.speaker, speakerLabels);
+
+        return (
+          <div
+            key={`${segment.startSec}-${segment.endSec}-${index}`}
+            className="rounded-[var(--radius-md)] border border-[var(--line-soft)] bg-[var(--graphite-800)] p-4"
+          >
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-[var(--mint-500)]">
+                {label ?? "화자 미상"}
+              </span>
+              <span className="text-xs text-[var(--text-secondary)]">
+                {formatTimestamp(segment.startSec)} - {formatTimestamp(segment.endSec)}
+              </span>
+            </div>
+            <p className="whitespace-pre-wrap text-[var(--text-secondary)] leading-relaxed">
+              {segment.text}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getTranscriptSpeakerLabel(
+  speaker: string | null,
+  labels: Map<string, string>,
+): string | null {
+  if (!speaker) {
+    return null;
+  }
+
+  return labels.get(speaker) ?? null;
+}
+
+function buildSpeakerLabelMap(segments: TranscriptSegment[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  let speakerIndex = 0;
+
+  for (const segment of segments) {
+    const speaker = segment.speaker?.trim();
+    if (!speaker || labels.has(speaker)) {
+      continue;
+    }
+
+    speakerIndex += 1;
+    labels.set(speaker, `화자 ${String.fromCharCode(64 + speakerIndex)}`);
+  }
+
+  return labels;
 }
 
 function SummaryCard({
@@ -272,5 +335,12 @@ function formatDuration(durationSec: number | null): string {
 
   const minutes = Math.floor(durationSec / 60);
   const seconds = durationSec % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatTimestamp(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  const minutes = Math.floor(safeValue / 60);
+  const seconds = safeValue % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }

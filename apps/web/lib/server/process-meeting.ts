@@ -8,11 +8,17 @@ import {
   getStoredMeetingByJob,
   markStageStarted,
   resetJobForRetry,
+  setProcessingCanceled,
   setProcessingFailure,
   updateJob,
 } from "./store";
 
-const activeJobs = new Set<string>();
+type ActiveJob = {
+  controller: AbortController;
+  promise: Promise<void>;
+};
+
+const activeJobs = new Map<string, ActiveJob>();
 
 interface StartMeetingProcessingOptions {
   uploadedAudio?: {
@@ -25,10 +31,13 @@ export function startMeetingProcessing(jobId: string, options?: StartMeetingProc
     return;
   }
 
-  activeJobs.add(jobId);
-  void processMeeting(jobId, options).finally(() => {
+  const controller = new AbortController();
+  const promise = processMeeting(jobId, controller.signal, options).finally(() => {
     activeJobs.delete(jobId);
   });
+
+  activeJobs.set(jobId, { controller, promise });
+  void promise;
 }
 
 export async function retryMeetingProcessing(jobId: string): Promise<void> {
@@ -36,7 +45,18 @@ export async function retryMeetingProcessing(jobId: string): Promise<void> {
   startMeetingProcessing(jobId);
 }
 
-async function processMeeting(jobId: string, options?: StartMeetingProcessingOptions): Promise<void> {
+export async function cancelMeetingProcessing(jobId: string): Promise<void> {
+  const activeJob = activeJobs.get(jobId);
+  if (activeJob) {
+    activeJob.controller.abort(new Error("Processing canceled by user"));
+    await activeJob.promise.catch(() => {});
+    return;
+  }
+
+  await setProcessingCanceled(jobId);
+}
+
+async function processMeeting(jobId: string, signal: AbortSignal, options?: StartMeetingProcessingOptions): Promise<void> {
   const storedMeeting = await getStoredMeetingByJob(jobId);
   if (!storedMeeting) {
     throw new Error(`Meeting for job ${jobId} not found`);
@@ -72,11 +92,14 @@ async function processMeeting(jobId: string, options?: StartMeetingProcessingOpt
       });
     }
 
-    const transcriptText = await transcribeAudioFile({
+    const transcript = await transcribeAudioFile({
       fileBuffer,
       fileName: storedMeeting.fileName || `${storedMeeting.id}.webm`,
       language: storedMeeting.language,
+      signal,
     });
+
+    throwIfAborted(signal);
 
     await updateJob(jobId, {
       stage: "transcribe",
@@ -96,12 +119,20 @@ async function processMeeting(jobId: string, options?: StartMeetingProcessingOpt
     const summary = await summarizeTranscript({
       title: storedMeeting.title,
       language: storedMeeting.language,
-      transcriptText,
+      transcriptText: transcript.transcriptText,
+      transcriptChunks: transcript.transcriptChunks,
       promptTemplateId,
+      signal,
     });
 
-    await completeProcessing(jobId, transcriptText, summary);
+    throwIfAborted(signal);
+    await completeProcessing(jobId, transcript.transcriptText, transcript.transcriptSegments, summary);
   } catch (error) {
+    if (isAbortError(error)) {
+      await setProcessingCanceled(jobId);
+      return;
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     await setProcessingFailure(jobId, stage, message, classifyError(message, stage));
   }
@@ -131,4 +162,22 @@ function classifyError(message: string, stage: "transcribe" | "summarize"): Proc
   }
 
   return stage === "transcribe" ? "transcription_failed" : "summary_failed";
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Processing canceled by user");
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+
+  if (error instanceof Error) {
+    return error.name === "AbortError" || error.message.toLowerCase().includes("canceled");
+  }
+
+  return false;
 }

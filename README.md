@@ -18,7 +18,7 @@ packages/
 1. 브라우저에서 오디오 파일을 업로드하거나 직접 녹음합니다.
 2. `POST /api/meetings`가 회의와 작업(job)을 생성합니다.
 3. 서버 내부 백그라운드 처리기가 OpenAI 전사를 수행합니다.
-4. 전사 결과를 OpenAI Responses API로 요약합니다.
+4. 긴 회의는 청크 단위로 요약한 뒤 최종 회의록으로 다시 통합합니다.
 5. `/processing/:jobId`에서 진행 상태를 polling 하고, 완료 시 `/meeting/:meetingId`로 이동합니다.
 
 ## 기술 스택
@@ -39,11 +39,15 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
-선택적으로 모델과 Storage bucket을 조정할 수 있습니다.
+선택적으로 모델, 청크 전략, Storage bucket을 조정할 수 있습니다.
 
 ```bash
-BREVOCA_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
+BREVOCA_TRANSCRIBE_MODEL=gpt-4o-transcribe-diarize
+BREVOCA_TRANSCRIBE_DIARIZATION=true
+BREVOCA_TRANSCRIBE_CHUNK_DURATION_SEC=900
+BREVOCA_TRANSCRIBE_CONCURRENCY=4
 BREVOCA_SUMMARY_MODEL=gpt-5-mini
+BREVOCA_SUMMARY_CHUNK_CONCURRENCY=4
 SUPABASE_MEETING_AUDIO_BUCKET=meeting-audio
 ```
 
