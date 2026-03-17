@@ -11,6 +11,9 @@ export function getSupabaseAdmin(): SupabaseClient {
 
   const url = getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL");
   const serviceRoleKey = getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+  if (serviceRoleKey.startsWith("sb_publishable_")) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a secret/service-role key, not a publishable key.");
+  }
 
   supabaseAdmin = createClient(url, serviceRoleKey, {
     auth: {

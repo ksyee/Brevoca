@@ -133,10 +133,11 @@ export function ErrorState({ type, onRetry, onDismiss, onSupport }: ErrorStatePr
     },
     network_error: {
       title: "네트워크 오류",
-      description: "인터넷 연결을 확인해주세요.",
+      description: "스토리지 또는 외부 서비스 연결에 실패했습니다.",
       possibleCauses: [
         "인터넷 연결이 끊어졌습니다",
         "방화벽이나 보안 설정이 접속을 차단하고 있습니다",
+        "스토리지 서비스가 일시적으로 응답하지 않습니다",
       ],
       actions: [
         {

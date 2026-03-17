@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { MeetingDetail } from "@brevoca/contracts";
+import { authedFetch } from "@/lib/client/authed-fetch";
 import { TagEditor } from "@/components/TagEditor";
 
 export default function MeetingDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -27,7 +28,7 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
     let mounted = true;
 
     async function loadMeeting() {
-      const response = await fetch(`/api/meetings/${id}`, { cache: "no-store" });
+      const response = await authedFetch(`/api/meetings/${id}`);
       if (!response.ok) {
         setLoading(false);
         return;

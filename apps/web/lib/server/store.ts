@@ -18,6 +18,7 @@ import {
 import { getMeetingAudioBucket, getSupabaseAdmin } from "./supabase";
 
 interface CreateMeetingInput {
+  workspaceId: string;
   fileBuffer: Buffer;
   fileName: string;
   title: string;
@@ -31,6 +32,7 @@ interface CreateMeetingInput {
 interface MeetingRow {
   id: string;
   job_id: string;
+  workspace_id: string | null;
   title: string;
   status: MeetingStatus;
   source_type: MeetingSourceType;
@@ -63,6 +65,8 @@ interface JobRow {
 interface StoredMeeting extends MeetingDetail {
   storageKey: string | null;
 }
+
+const STORAGE_DOWNLOAD_RETRY_DELAYS_MS = [250, 750, 1500];
 
 function getAudioExtension(fileName: string): string {
   const parsed = path.extname(fileName).trim();
@@ -165,6 +169,7 @@ export async function createMeeting(input: CreateMeetingInput): Promise<MeetingC
         .insert({
           id: meetingId,
           job_id: jobId,
+          workspace_id: input.workspaceId,
           title: input.title,
           status: "uploaded",
           source_type: input.sourceType,
@@ -217,11 +222,12 @@ export async function createMeeting(input: CreateMeetingInput): Promise<MeetingC
   };
 }
 
-export async function listMeetings(): Promise<MeetingRecord[]> {
+export async function listMeetings(workspaceId: string): Promise<MeetingRecord[]> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("meetings")
     .select("id, job_id, title, status, source_type, language, duration_sec, created_at, updated_at, prompt_template_id, tags")
+    .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -231,12 +237,13 @@ export async function listMeetings(): Promise<MeetingRecord[]> {
   return (data as MeetingRow[]).map(mapMeetingRecord);
 }
 
-export async function getMeeting(meetingId: string): Promise<MeetingDetail | null> {
+export async function getMeeting(meetingId: string, workspaceId: string): Promise<MeetingDetail | null> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("meetings")
     .select("*")
     .eq("id", meetingId)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
 
   if (error) {
@@ -261,6 +268,57 @@ export async function getJob(jobId: string): Promise<JobRecord | null> {
   return data ? mapJob(data as JobRow) : null;
 }
 
+export async function getJobForWorkspace(jobId: string, workspaceId: string): Promise<JobRecord | null> {
+  const supabase = getSupabaseAdmin();
+  const { data: jobRow, error: jobError } = await supabase
+    .from("jobs")
+    .select("*")
+    .eq("id", jobId)
+    .maybeSingle();
+
+  if (jobError) {
+    throw new Error(`Failed to load job: ${jobError.message}`);
+  }
+
+  if (!jobRow) {
+    return null;
+  }
+
+  const { data: meetingRow, error: meetingError } = await supabase
+    .from("meetings")
+    .select("workspace_id")
+    .eq("id", (jobRow as JobRow).meeting_id)
+    .maybeSingle();
+
+  if (meetingError) {
+    throw new Error(`Failed to verify job ownership: ${meetingError.message}`);
+  }
+
+  if (!meetingRow || (meetingRow as { workspace_id: string | null }).workspace_id !== workspaceId) {
+    return null;
+  }
+
+  return mapJob(jobRow as JobRow);
+}
+
+export async function requireWorkspaceMembership(userId: string, workspaceId: string): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("workspace_memberships")
+    .select("workspace_id")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to verify workspace membership: ${error.message}`);
+  }
+
+  if (!data) {
+    throw new Error("Forbidden");
+  }
+}
+
 export async function getStoredMeetingByJob(jobId: string): Promise<StoredMeeting | null> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
@@ -279,13 +337,42 @@ export async function getStoredMeetingByJob(jobId: string): Promise<StoredMeetin
 export async function downloadMeetingAudio(storageKey: string): Promise<Buffer> {
   const supabase = getSupabaseAdmin();
   const bucket = getMeetingAudioBucket();
-  const { data, error } = await supabase.storage.from(bucket).download(storageKey);
+  let lastError: { message: string } | null = null;
 
-  if (error) {
-    throw new Error(`Failed to download meeting audio: ${error.message}`);
+  for (let attempt = 0; attempt <= STORAGE_DOWNLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+    const { data, error } = await supabase.storage.from(bucket).download(storageKey);
+    if (!error) {
+      return Buffer.from(await data.arrayBuffer());
+    }
+
+    lastError = error;
+    if (!shouldRetryStorageDownload(error.message) || attempt === STORAGE_DOWNLOAD_RETRY_DELAYS_MS.length) {
+      break;
+    }
+
+    await sleep(STORAGE_DOWNLOAD_RETRY_DELAYS_MS[attempt]);
   }
 
-  return Buffer.from(await data.arrayBuffer());
+  throw new Error(`Failed to download meeting audio: ${lastError?.message ?? "Unknown storage error"}`);
+}
+
+function shouldRetryStorageDownload(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("bad gateway") ||
+    lower.includes("gateway") ||
+    lower.includes("timeout") ||
+    lower.includes("network") ||
+    lower.includes("fetch failed") ||
+    lower.includes("econnreset") ||
+    lower.includes("socket hang up")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export async function updateJob(jobId: string, patch: Partial<JobRecord>): Promise<JobRecord> {

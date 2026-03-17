@@ -9,6 +9,7 @@ import {
   promptTemplateIds,
   type PromptTemplateId,
 } from "@brevoca/contracts";
+import { authedFetch } from "@/lib/client/authed-fetch";
 import { toast } from "sonner";
 
 export default function UploadPage() {
@@ -75,13 +76,14 @@ export default function UploadPage() {
         formData.append("durationSec", String(durationSec));
       }
 
-      const response = await fetch("/api/meetings", {
+      const response = await authedFetch("/api/meetings", {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        const errorMessage = await extractServerError(response);
+        throw new Error(errorMessage);
       }
 
       const payload = (await response.json()) as { jobId: string };
@@ -90,7 +92,8 @@ export default function UploadPage() {
       router.push(`/processing/${payload.jobId}`);
     } catch (error) {
       console.error(error);
-      toast.error("업로드에 실패했습니다.");
+      const message = error instanceof Error ? error.message : "업로드에 실패했습니다.";
+      toast.error(message);
       setUploading(false);
     } finally {
       window.clearInterval(progressTimer);
@@ -117,6 +120,12 @@ export default function UploadPage() {
   const applySelectedFile = async (file: File) => {
     if (!isSupportedAudioFile(file)) {
       toast.error("지원하지 않는 오디오 형식입니다.");
+      return;
+    }
+
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error("파일 크기가 너무 큽니다. 최대 100MB까지 업로드할 수 있습니다.");
       return;
     }
 
@@ -358,4 +367,17 @@ function formatDuration(durationSec: number | null): string {
 
 function isSupportedAudioFile(file: File): boolean {
   return file.type.startsWith("audio/") || /\.(mp3|wav|m4a|ogg|webm)$/i.test(file.name);
+}
+
+async function extractServerError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: string };
+    if (payload.error) {
+      return payload.error;
+    }
+  } catch {
+    // JSON 파싱 실패 시 텍스트로 fallback
+  }
+
+  return `업로드에 실패했습니다. (${response.status})`;
 }

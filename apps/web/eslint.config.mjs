@@ -14,6 +14,13 @@ const config = [
   {
     ignores: [".next/**", "node_modules/**"],
   },
+  {
+    rules: {
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/immutability": "warn",
+      "react-hooks/purity": "warn",
+    },
+  },
 ];
 
 export default config;

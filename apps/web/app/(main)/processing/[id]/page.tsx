@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle, ChevronRight, FileAudio, Loader2, Sparkles } from "lucide-react";
 import type { JobRecord, ProcessingErrorType } from "@brevoca/contracts";
+import { authedFetch } from "@/lib/client/authed-fetch";
 import { ErrorState } from "@/components/ErrorState";
 
 type StepId = "upload" | "transcribe" | "summarize" | "complete";
@@ -26,7 +27,7 @@ export default function ProcessingPage({ params }: { params: Promise<{ id: strin
     let mounted = true;
 
     async function loadJob() {
-      const response = await fetch(`/api/jobs/${id}`, { cache: "no-store" });
+      const response = await authedFetch(`/api/jobs/${id}`);
       if (!response.ok) {
         return;
       }
@@ -57,9 +58,9 @@ export default function ProcessingPage({ params }: { params: Promise<{ id: strin
 
   const handleRetry = async () => {
     setRetrying(true);
-    const response = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+    const response = await authedFetch(`/api/jobs/${id}/retry`, { method: "POST" });
     if (response.ok) {
-      const refreshed = await fetch(`/api/jobs/${id}`, { cache: "no-store" });
+      const refreshed = await authedFetch(`/api/jobs/${id}`);
       if (refreshed.ok) {
         setJob((await refreshed.json()) as JobRecord);
       }

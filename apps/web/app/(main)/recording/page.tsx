@@ -9,6 +9,7 @@ import {
   promptTemplateIds,
   type PromptTemplateId,
 } from "@brevoca/contracts";
+import { authedFetch } from "@/lib/client/authed-fetch";
 import { toast } from "sonner";
 
 type RecordingState = "idle" | "recording" | "paused" | "stopped";
@@ -144,6 +145,12 @@ export default function BrowserRecordingPage() {
       return;
     }
 
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+    if (recordedBlob.size > MAX_FILE_SIZE) {
+      toast.error("녹음 파일이 너무 큽니다. 최대 100MB까지 업로드할 수 있습니다.");
+      return;
+    }
+
     setUploading(true);
     setUploadProgress(10);
     const progressTimer = window.setInterval(() => {
@@ -162,13 +169,14 @@ export default function BrowserRecordingPage() {
       formData.append("sourceType", "browser_recording");
       formData.append("durationSec", String(duration));
 
-      const response = await fetch("/api/meetings", {
+      const response = await authedFetch("/api/meetings", {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        const errorMessage = await extractServerError(response);
+        throw new Error(errorMessage);
       }
 
       const payload = (await response.json()) as { jobId: string };
@@ -177,7 +185,8 @@ export default function BrowserRecordingPage() {
       router.push(`/processing/${payload.jobId}`);
     } catch (error) {
       console.error(error);
-      toast.error("녹음 업로드에 실패했습니다.");
+      const message = error instanceof Error ? error.message : "녹음 업로드에 실패했습니다.";
+      toast.error(message);
       setUploading(false);
     } finally {
       window.clearInterval(progressTimer);
@@ -439,4 +448,17 @@ function formatDuration(seconds: number): string {
 function buildFileName(title: string): string {
   const base = title.trim() || `recording-${new Date().toISOString().slice(0, 19)}`;
   return base.replace(/[^\w\-가-힣]+/g, "-");
+}
+
+async function extractServerError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: string };
+    if (payload.error) {
+      return payload.error;
+    }
+  } catch {
+    // JSON 파싱 실패 시 텍스트로 fallback
+  }
+
+  return `녹음 업로드에 실패했습니다. (${response.status})`;
 }

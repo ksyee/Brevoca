@@ -35,6 +35,7 @@ packages/
 ```bash
 OPENAI_API_KEY=...
 NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
@@ -78,8 +79,11 @@ pnpm start
 
 ## Supabase 설정
 
-- SQL Editor에서 [`supabase/schema.sql`](/home/ksy/wsl-workspace/Brevoca/supabase/schema.sql) 을 실행해 `meetings`, `jobs`, `meeting-audio` bucket을 생성합니다.
-- 서버는 `SUPABASE_SERVICE_ROLE_KEY`로만 Supabase에 접근합니다.
+- `pnpm dlx supabase@latest login` 으로 CLI 로그인합니다.
+- `pnpm dlx supabase@latest link --project-ref <project-ref>` 로 프로젝트를 연결합니다.
+- [`supabase/migrations/20260317000100_init.sql`](/home/ksy/wsl-workspace/Brevoca/supabase/migrations/20260317000100_init.sql) 와 [`supabase/migrations/20260317000200_auth_workspaces.sql`](/home/ksy/wsl-workspace/Brevoca/supabase/migrations/20260317000200_auth_workspaces.sql) 기준으로 `pnpm dlx supabase@latest db push` 를 실행합니다.
+- 브라우저는 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, 서버는 `SUPABASE_SERVICE_ROLE_KEY`로 각각 접근합니다.
+- `SUPABASE_SERVICE_ROLE_KEY`에는 publishable key가 아니라 secret/service-role key를 넣어야 합니다.
 - 오디오 파일은 private Storage bucket에 저장되고, DB에는 `storage_key`만 저장됩니다.
 
 ## 향후 Electron 재도입 원칙
