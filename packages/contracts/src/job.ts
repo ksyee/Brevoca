@@ -1,5 +1,5 @@
 export const jobStages = ["transcribe", "summarize"] as const;
-export const jobStatuses = ["queued", "processing", "completed", "failed"] as const;
+export const jobStatuses = ["queued", "processing", "completed", "failed", "canceled"] as const;
 export const processingErrorTypes = [
   "upload_failed",
   "transcription_failed",

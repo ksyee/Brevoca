@@ -14,6 +14,7 @@ import {
   type MeetingSummary,
   type ProcessingErrorType,
   type PromptTemplateId,
+  type TranscriptSegment,
 } from "@brevoca/contracts";
 import { getMeetingAudioBucket, getSupabaseAdmin } from "./supabase";
 
@@ -43,6 +44,7 @@ interface MeetingRow {
   prompt_template_id: PromptTemplateId;
   tags: string[] | null;
   transcript_text: string | null;
+  transcript_segments: TranscriptSegment[] | null;
   summary: MeetingSummary | null;
   file_name: string | null;
   error_message: string | null;
@@ -125,6 +127,7 @@ function mapMeetingDetail(row: MeetingRow): StoredMeeting {
   return {
     ...mapMeetingRecord(row),
     transcriptText: row.transcript_text,
+    transcriptSegments: row.transcript_segments,
     summary: row.summary,
     fileName: row.file_name,
     errorMessage: row.error_message ?? null,
@@ -178,6 +181,7 @@ export async function createMeeting(input: CreateMeetingInput): Promise<MeetingC
           prompt_template_id: input.promptTemplateId || defaultPromptTemplateId,
           tags: input.tags,
           transcript_text: null,
+          transcript_segments: null,
           summary: null,
           file_name: input.fileName,
           error_message: null,
@@ -334,6 +338,22 @@ export async function getStoredMeetingByJob(jobId: string): Promise<StoredMeetin
   return data ? mapMeetingDetail(data as MeetingRow) : null;
 }
 
+export async function getStoredMeeting(meetingId: string, workspaceId: string): Promise<StoredMeeting | null> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("meetings")
+    .select("*")
+    .eq("id", meetingId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load meeting: ${error.message}`);
+  }
+
+  return data ? mapMeetingDetail(data as MeetingRow) : null;
+}
+
 export async function downloadMeetingAudio(storageKey: string): Promise<Buffer> {
   const supabase = getSupabaseAdmin();
   const bucket = getMeetingAudioBucket();
@@ -408,6 +428,7 @@ export async function updateMeeting(
     ...(patch.promptTemplateId ? { prompt_template_id: patch.promptTemplateId } : {}),
     ...(patch.tags ? { tags: patch.tags } : {}),
     ...(patch.transcriptText !== undefined ? { transcript_text: patch.transcriptText } : {}),
+    ...(patch.transcriptSegments !== undefined ? { transcript_segments: patch.transcriptSegments } : {}),
     ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
     ...(patch.fileName !== undefined ? { file_name: patch.fileName } : {}),
     ...(patch.errorMessage !== undefined ? { error_message: patch.errorMessage } : {}),
@@ -450,6 +471,55 @@ export async function setProcessingFailure(
   });
 }
 
+export async function setProcessingCanceled(
+  jobId: string,
+  message = "사용자 요청으로 처리를 중단했습니다.",
+): Promise<void> {
+  const meeting = await getStoredMeetingByJob(jobId);
+  const job = await getJob(jobId);
+  if (!meeting || !job) {
+    return;
+  }
+
+  if (job.status === "completed" || job.status === "canceled") {
+    return;
+  }
+
+  try {
+    await updateJob(jobId, {
+      stage: job.stage,
+      status: "canceled",
+      progress: job.progress,
+      logs: [...job.logs, message],
+      errorMessage: null,
+      errorType: null,
+    });
+
+    await updateMeeting(meeting.id, {
+      status: "canceled",
+      errorMessage: null,
+    });
+  } catch (error) {
+    if (!isCanceledStatusUnsupported(error)) {
+      throw error;
+    }
+
+    await updateJob(jobId, {
+      stage: job.stage,
+      status: "failed",
+      progress: job.progress,
+      logs: [...job.logs, `${message} (canceled 상태 미지원으로 failed 처리)`],
+      errorMessage: null,
+      errorType: null,
+    });
+
+    await updateMeeting(meeting.id, {
+      status: "failed",
+      errorMessage: null,
+    });
+  }
+}
+
 export async function markStageStarted(
   jobId: string,
   meetingStatus: MeetingStatus,
@@ -481,6 +551,7 @@ export async function markStageStarted(
 export async function completeProcessing(
   jobId: string,
   transcriptText: string,
+  transcriptSegments: TranscriptSegment[] | null,
   summary: MeetingSummary,
 ): Promise<void> {
   const meeting = await getStoredMeetingByJob(jobId);
@@ -501,6 +572,7 @@ export async function completeProcessing(
   await updateMeeting(meeting.id, {
     status: "completed",
     transcriptText,
+    transcriptSegments,
     summary,
     errorMessage: null,
   });
@@ -526,4 +598,35 @@ export async function resetJobForRetry(jobId: string): Promise<JobRecord> {
     errorMessage: null,
     errorType: null,
   });
+}
+
+export async function deleteMeetingForWorkspace(meetingId: string, workspaceId: string): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const meeting = await getStoredMeeting(meetingId, workspaceId);
+  if (!meeting) {
+    throw new Error("NotFound");
+  }
+
+  const { error } = await supabase
+    .from("meetings")
+    .delete()
+    .eq("id", meetingId)
+    .eq("workspace_id", workspaceId);
+
+  if (error) {
+    throw new Error(`Failed to delete meeting: ${error.message}`);
+  }
+
+  if (meeting.storageKey) {
+    const bucket = getMeetingAudioBucket();
+    await supabase.storage.from(bucket).remove([meeting.storageKey]);
+  }
+}
+
+function isCanceledStatusUnsupported(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("canceled") &&
+    (message.includes("check constraint") || message.includes("violates check constraint") || message.includes("invalid input value"))
+  );
 }
