@@ -4,6 +4,9 @@
   "private": true,
   "description": "Brevoca workspace",
   "packageManager": "pnpm@10.28.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["ffmpeg-static"]
+  },
   "scripts": {
     "dev": "pnpm --filter @brevoca/web dev",
     "build": "pnpm --filter @brevoca/web build",

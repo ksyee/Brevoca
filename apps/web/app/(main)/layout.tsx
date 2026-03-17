@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { LayoutDashboard, Upload, Search, Settings, FileText, Plus, Menu, X, Mic } from "lucide-react";
+import { useAppSession } from "@/components/AppSessionProvider";
 import { WorkspaceSwitcher } from "@/components/WorkspaceSwitcher";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { ProfileMenu } from "@/components/ProfileMenu";
@@ -11,12 +12,25 @@ import { motion, AnimatePresence } from "motion/react";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { status, workspaces } = useAppSession();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
     setSidebarOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+      return;
+    }
+
+    if (status === "authenticated" && workspaces.length === 0) {
+      router.replace("/onboarding");
+    }
+  }, [router, status, workspaces.length]);
 
   const navItems = [
     { path: "/dashboard", label: "대시보드", icon: LayoutDashboard, exact: true },
@@ -30,6 +44,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (exact) return pathname === path;
     return pathname.startsWith(path);
   };
+
+  if (status === "loading" || status === "unauthenticated" || workspaces.length === 0) {
+    return (
+      <div className="min-h-screen bg-[var(--bg-canvas)] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-full border-2 border-[var(--line-soft)] border-t-[var(--mint-500)] animate-spin mx-auto mb-4" />
+          <p className="text-sm text-[var(--text-secondary)]">워크스페이스를 불러오는 중입니다.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] flex">

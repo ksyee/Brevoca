@@ -2,21 +2,15 @@
 
 import { useState, useEffect, useRef } from "react";
 import { ChevronDown, Check, Plus } from "lucide-react";
+import { useAppSession } from "@/components/AppSessionProvider";
 import { toast } from "sonner";
-
-const defaultWorkspaces = [
-  { id: "1", name: "제조팀 워크스페이스", role: "관리자" },
-  { id: "2", name: "생산관리팀", role: "멤버" },
-  { id: "3", name: "품질팀", role: "멤버" },
-];
 
 export function WorkspaceSwitcher() {
   const [isOpen, setIsOpen] = useState(false);
-  const [workspaces, setWorkspaces] = useState(defaultWorkspaces);
-  const [currentWorkspace, setCurrentWorkspace] = useState(defaultWorkspaces[0]);
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { workspaces, currentWorkspace, createWorkspace, selectWorkspace } = useAppSession();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -41,28 +35,26 @@ export function WorkspaceSwitcher() {
     }
   }, [isCreating]);
 
-  const handleSelect = (workspace: typeof defaultWorkspaces[0]) => {
-    setCurrentWorkspace(workspace);
+  const handleSelect = async (workspaceId: string) => {
+    await selectWorkspace(workspaceId);
     setIsOpen(false);
     setIsCreating(false);
     setNewName("");
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     const trimmed = newName.trim();
     if (!trimmed) return;
 
-    const newWorkspace = {
-      id: String(Date.now()),
-      name: trimmed,
-      role: "관리자",
-    };
-    setWorkspaces((prev) => [...prev, newWorkspace]);
-    setCurrentWorkspace(newWorkspace);
-    setIsCreating(false);
-    setNewName("");
-    setIsOpen(false);
-    toast.success(`"${trimmed}" 워크스페이스가 생성되었습니다`);
+    try {
+      await createWorkspace(trimmed);
+      setIsCreating(false);
+      setNewName("");
+      setIsOpen(false);
+      toast.success(`"${trimmed}" 워크스페이스가 생성되었습니다`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "워크스페이스 생성에 실패했습니다.");
+    }
   };
 
   const handleCreateKeyDown = (e: React.KeyboardEvent) => {
@@ -71,6 +63,15 @@ export function WorkspaceSwitcher() {
       handleCreate();
     }
   };
+
+  if (!currentWorkspace) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-[var(--radius-md)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
+        <div className="w-6 h-6 rounded-md bg-[var(--graphite-800)]" />
+        <span className="text-sm text-[var(--text-secondary)]">워크스페이스 로딩 중</span>
+      </div>
+    );
+  }
 
   return (
     <div className="relative">
@@ -102,7 +103,9 @@ export function WorkspaceSwitcher() {
               {workspaces.map((workspace) => (
                 <button
                   key={workspace.id}
-                  onClick={() => handleSelect(workspace)}
+                  onClick={() => {
+                    void handleSelect(workspace.id);
+                  }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-sm)] transition-colors ${
                     currentWorkspace.id === workspace.id
                       ? "bg-[var(--graphite-800)]"
@@ -114,7 +117,7 @@ export function WorkspaceSwitcher() {
                   </div>
                   <div className="flex-1 text-left min-w-0">
                     <div className="text-sm truncate">{workspace.name}</div>
-                    <div className="text-xs text-[var(--text-secondary)]">{workspace.role}</div>
+                    <div className="text-xs text-[var(--text-secondary)]">{workspace.role === "owner" ? "관리자" : "멤버"}</div>
                   </div>
                   {currentWorkspace.id === workspace.id && (
                     <Check className="w-4 h-4 text-[var(--mint-500)] flex-shrink-0" />
@@ -144,7 +147,9 @@ export function WorkspaceSwitcher() {
                       취소
                     </button>
                     <button
-                      onClick={handleCreate}
+                      onClick={() => {
+                        void handleCreate();
+                      }}
                       disabled={!newName.trim()}
                       className="flex-1 px-3 py-2 rounded-[var(--radius-sm)] bg-[var(--mint-500)] text-[var(--graphite-950)] text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
                     >

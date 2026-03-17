@@ -14,13 +14,19 @@ import {
 
 const activeJobs = new Set<string>();
 
-export function startMeetingProcessing(jobId: string): void {
+interface StartMeetingProcessingOptions {
+  uploadedAudio?: {
+    fileBuffer: Buffer;
+  };
+}
+
+export function startMeetingProcessing(jobId: string, options?: StartMeetingProcessingOptions): void {
   if (activeJobs.has(jobId)) {
     return;
   }
 
   activeJobs.add(jobId);
-  void processMeeting(jobId).finally(() => {
+  void processMeeting(jobId, options).finally(() => {
     activeJobs.delete(jobId);
   });
 }
@@ -30,7 +36,7 @@ export async function retryMeetingProcessing(jobId: string): Promise<void> {
   startMeetingProcessing(jobId);
 }
 
-async function processMeeting(jobId: string): Promise<void> {
+async function processMeeting(jobId: string, options?: StartMeetingProcessingOptions): Promise<void> {
   const storedMeeting = await getStoredMeetingByJob(jobId);
   if (!storedMeeting) {
     throw new Error(`Meeting for job ${jobId} not found`);
@@ -48,7 +54,23 @@ async function processMeeting(jobId: string): Promise<void> {
       throw new Error("Meeting audio is missing from storage.");
     }
 
-    const fileBuffer = await downloadMeetingAudio(storedMeeting.storageKey);
+    const fileBuffer =
+      options?.uploadedAudio?.fileBuffer ??
+      await downloadMeetingAudio(storedMeeting.storageKey);
+
+    const isChunked = fileBuffer.length > 24 * 1024 * 1024;
+    if (isChunked) {
+      await updateJob(jobId, {
+        stage: "transcribe",
+        status: "processing",
+        progress: 20,
+        logs: [
+          `오디오 업로드 완료: ${storedMeeting.fileName ?? storedMeeting.id}`,
+          "OpenAI 전사를 시작합니다",
+          `파일 크기(${Math.round(fileBuffer.length / 1024 / 1024)}MB)가 크므로 분할 전사를 진행합니다`,
+        ],
+      });
+    }
 
     const transcriptText = await transcribeAudioFile({
       fileBuffer,
@@ -60,7 +82,12 @@ async function processMeeting(jobId: string): Promise<void> {
       stage: "transcribe",
       status: "processing",
       progress: 55,
-      logs: [`오디오 업로드 완료: ${storedMeeting.fileName ?? storedMeeting.id}`, "OpenAI 전사를 시작합니다", "전사 완료"],
+      logs: [
+        `오디오 업로드 완료: ${storedMeeting.fileName ?? storedMeeting.id}`,
+        "OpenAI 전사를 시작합니다",
+        ...(isChunked ? [`분할 전사 완료 (${Math.round(fileBuffer.length / 1024 / 1024)}MB)`] : []),
+        "전사 완료",
+      ],
     });
 
     await markStageStarted(jobId, "summarizing", "summarize", 70, "OpenAI 요약을 시작합니다");
@@ -87,7 +114,15 @@ function classifyError(message: string, stage: "transcribe" | "summarize"): Proc
     return "timeout";
   }
 
-  if (lower.includes("network")) {
+  if (
+    lower.includes("network") ||
+    lower.includes("bad gateway") ||
+    lower.includes("gateway") ||
+    lower.includes("fetch failed") ||
+    lower.includes("econnreset") ||
+    lower.includes("socket hang up") ||
+    lower.includes("failed to download meeting audio")
+  ) {
     return "network_error";
   }
 

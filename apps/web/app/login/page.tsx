@@ -1,30 +1,94 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FileText, Mail, Lock, ArrowRight } from "lucide-react";
+import { useAppSession } from "@/components/AppSessionProvider";
+import { getBrowserSupabaseClient } from "@/lib/supabase/client";
+import { toast } from "sonner";
 
 export default function Login() {
   const router = useRouter();
+  const { status, workspaces, refresh } = useAppSession();
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [companyName, setCompanyName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+
+    router.replace(workspaces.length > 0 ? "/dashboard" : "/onboarding");
+  }, [router, status, workspaces.length]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Mock authentication
-    if (isLogin) {
-      router.push("/app");
-    } else {
-      // Go to onboarding for new users
-      setTimeout(() => {
-        router.push("/onboarding");
-      }, 1500);
+    const supabase = getBrowserSupabaseClient();
+    setSubmitting(true);
+
+    try {
+      if (isLogin) {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        if (!data.session) {
+          throw new Error("로그인 세션을 만들지 못했습니다.");
+        }
+
+        await refresh();
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            company_name: companyName.trim(),
+          },
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data.session) {
+        toast.success("이메일 확인 후 로그인해주세요.");
+        setIsLogin(true);
+        return;
+      }
+
+      await refresh();
+      router.replace(`/onboarding?workspaceName=${encodeURIComponent(companyName.trim() || "새 워크스페이스")}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "로그인에 실패했습니다.";
+      toast.error(message);
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen bg-[var(--bg-canvas)] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-full border-2 border-[var(--line-soft)] border-t-[var(--mint-500)] animate-spin mx-auto mb-4" />
+          <p className="text-sm text-[var(--text-secondary)]">세션을 확인하는 중입니다.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] flex items-center justify-center p-6 relative overflow-hidden">
@@ -139,9 +203,10 @@ export default function Login() {
 
             <button
               type="submit"
+              disabled={submitting}
               className="w-full py-3 rounded-[var(--radius-md)] bg-gradient-to-r from-[var(--mint-500)] to-[var(--sky-500)] text-[var(--graphite-950)] hover:opacity-90 transition-opacity flex items-center justify-center gap-2 font-medium"
             >
-              <span>{isLogin ? "로그인" : "시작하기"}</span>
+              <span>{submitting ? "처리 중..." : isLogin ? "로그인" : "시작하기"}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
