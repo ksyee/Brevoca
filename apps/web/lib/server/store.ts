@@ -70,6 +70,16 @@ interface StoredMeeting extends MeetingDetail {
 
 const STORAGE_DOWNLOAD_RETRY_DELAYS_MS = [250, 750, 1500];
 
+export class StorageDownloadError extends Error {
+  readonly isTransient: boolean;
+
+  constructor(message: string, isTransient: boolean) {
+    super(message);
+    this.name = "StorageDownloadError";
+    this.isTransient = isTransient;
+  }
+}
+
 function getAudioExtension(fileName: string): string {
   const parsed = path.extname(fileName).trim();
   return parsed || ".webm";
@@ -361,19 +371,24 @@ export async function downloadMeetingAudio(storageKey: string): Promise<Buffer> 
 
   for (let attempt = 0; attempt <= STORAGE_DOWNLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
     const { data, error } = await supabase.storage.from(bucket).download(storageKey);
-    if (!error) {
+    if (!error && data) {
       return Buffer.from(await data.arrayBuffer());
     }
 
-    lastError = error;
-    if (!shouldRetryStorageDownload(error.message) || attempt === STORAGE_DOWNLOAD_RETRY_DELAYS_MS.length) {
+    lastError = error ?? { message: "Storage returned no file data." };
+    const isTransient = shouldRetryStorageDownload(lastError.message);
+    if (!isTransient || attempt === STORAGE_DOWNLOAD_RETRY_DELAYS_MS.length) {
       break;
     }
 
     await sleep(STORAGE_DOWNLOAD_RETRY_DELAYS_MS[attempt]);
   }
 
-  throw new Error(`Failed to download meeting audio: ${lastError?.message ?? "Unknown storage error"}`);
+  const detail = lastError?.message ?? "Unknown storage error";
+  throw new StorageDownloadError(
+    formatStorageDownloadErrorMessage(detail),
+    shouldRetryStorageDownload(detail),
+  );
 }
 
 function shouldRetryStorageDownload(message: string): boolean {
@@ -387,6 +402,32 @@ function shouldRetryStorageDownload(message: string): boolean {
     lower.includes("econnreset") ||
     lower.includes("socket hang up")
   );
+}
+
+function formatStorageDownloadErrorMessage(detail: string): string {
+  const lower = detail.toLowerCase();
+
+  if (lower.includes("fetch failed")) {
+    return "Storage에서 회의 오디오 다운로드 중 네트워크 연결에 실패했습니다.";
+  }
+
+  if (lower.includes("econnreset")) {
+    return "Storage에서 회의 오디오 다운로드 중 연결이 재설정되었습니다.";
+  }
+
+  if (lower.includes("socket hang up")) {
+    return "Storage에서 회의 오디오 다운로드 중 원격 스토리지가 연결을 종료했습니다.";
+  }
+
+  if (lower.includes("timeout")) {
+    return "Storage에서 회의 오디오 다운로드가 시간 안에 완료되지 않았습니다.";
+  }
+
+  if (lower.includes("network") || lower.includes("bad gateway") || lower.includes("gateway")) {
+    return `Storage에서 회의 오디오 다운로드 중 네트워크 오류가 발생했습니다: ${detail}`;
+  }
+
+  return `Storage에서 회의 오디오를 다운로드하지 못했습니다: ${detail}`;
 }
 
 function sleep(ms: number): Promise<void> {

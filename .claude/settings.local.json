@@ -3,7 +3,14 @@
     "allow": [
       "Bash(npx tsc --noEmit)",
       "Bash(npx.cmd tsc --noEmit)",
-      "Bash(/c/Users/KSY/AppData/Roaming/nvm/v22.15.0/npx.cmd tsc --noEmit)"
+      "Bash(/c/Users/KSY/AppData/Roaming/nvm/v22.15.0/npx.cmd tsc --noEmit)",
+      "Bash(npx tsc:*)",
+      "Bash(node_modules/.bin/tsc --noEmit --project apps/web/tsconfig.json)",
+      "Bash(apps/web/node_modules/.bin/tsc --noEmit --project apps/web/tsconfig.json)",
+      "Bash(find . -path */node_modules/.bin/tsc -maxdepth 4)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\(''''scripts'''',{}\\), indent=2\\)\\)\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); pm=d.get\\(''''packageManager'''',''''''''\\); print\\(pm\\); print\\(json.dumps\\(d.get\\(''''scripts'''',{}\\), indent=2\\)\\)\")",
+      "Bash(pnpm --filter @brevoca/web exec tsc --noEmit)"
     ]
   }
 }

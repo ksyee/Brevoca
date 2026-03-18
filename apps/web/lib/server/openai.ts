@@ -19,15 +19,74 @@ const require = createRequire(import.meta.url);
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const WHISPER_MAX_SIZE = 24 * 1024 * 1024; // 24MB (25MB 제한에 여유분)
-const TRANSCRIBE_MAX_DURATION_SEC = 1400; // gpt-4o-transcribe-diarize 모델 최대 길이 제한
-const DEFAULT_CHUNK_DURATION_SEC = 900; // 15분 단위 분할
+const TRANSCRIBE_MAX_DURATION_SEC = 1400; // OpenAI transcribe 모델 최대 길이 제한
+const DEFAULT_CHUNK_DURATION_SEC = 300; // 5분 단위 분할 (작은 청크 + 높은 병렬도)
 const PREPROCESS_BITRATE = "48k"; // 음성 전사에 충분한 비트레이트
 const DEFAULT_TRANSCRIBE_CONCURRENCY = 4;
-const DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-transcribe-diarize";
+const DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
 const DEFAULT_SUMMARY_MODEL = "gpt-5-mini";
+const OPENAI_TRANSCRIBE_RETRY_DELAYS_MS = [500, 1000, 2000];
+const OPENAI_RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const DEFAULT_GLOBAL_TRANSCRIBE_CONCURRENCY = 8;
+
+// ── 타이밍 유틸 ──
+
+function timedStep<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const start = performance.now();
+  return fn().then(
+    (result) => {
+      console.log(`[brevoca:perf] ${label} — ${(performance.now() - start).toFixed(0)}ms`);
+      return result;
+    },
+    (err) => {
+      console.log(`[brevoca:perf] ${label} — FAILED ${(performance.now() - start).toFixed(0)}ms`);
+      throw err;
+    },
+  );
+}
+
+// ── 글로벌 전사 세마포어 ──
+
+const globalTranscribeSemaphore = createSemaphore(getGlobalTranscribeConcurrency());
+
+function createSemaphore(max: number) {
+  let running = 0;
+  const queue: Array<() => void> = [];
+
+  return {
+    async acquire(): Promise<void> {
+      if (running < max) {
+        running += 1;
+        return;
+      }
+      await new Promise<void>((resolve) => queue.push(resolve));
+    },
+    release(): void {
+      running -= 1;
+      const next = queue.shift();
+      if (next) {
+        running += 1;
+        next();
+      }
+    },
+  };
+}
+
+function getGlobalTranscribeConcurrency(): number {
+  return getPositiveIntegerEnv("BREVOCA_GLOBAL_TRANSCRIBE_CONCURRENCY", DEFAULT_GLOBAL_TRANSCRIBE_CONCURRENCY);
+}
 
 const SUMMARY_JSON_SHAPE =
   '{"nextSteps":[{"content":string,"assignee":string|null,"dueDate":string|null}],"topics":[{"title":string,"points":[string]}]}';
+
+type OpenAiOperation = "transcription" | "summary";
+
+class OpenAiHttpError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAiHttpError";
+  }
+}
 
 function getRequiredEnv(name: string, fallback?: string): string {
   const value = process.env[name]?.trim() || fallback;
@@ -56,27 +115,55 @@ interface DiarizedSegmentPayload {
   text?: string | null;
 }
 
+export type TranscribeProgressCallback = (progress: number, message: string) => void | Promise<void>;
+
 export async function transcribeAudioFile(options: {
   fileBuffer: Buffer;
   fileName: string;
   language: string;
+  durationSec?: number | null;
   signal?: AbortSignal;
+  onProgress?: TranscribeProgressCallback;
 }): Promise<TranscriptionResult> {
-  const { buffer, fileName } = await preprocessAudio(
-    options.fileBuffer,
-    options.fileName,
-    options.signal,
+  const totalStart = performance.now();
+  const report = options.onProgress ?? (() => {});
+
+  await report(16, "오디오 전처리 중 (무음 제거 + 인코딩)");
+  const { buffer, fileName } = await timedStep("preprocess", () =>
+    preprocessAudio(options.fileBuffer, options.fileName, options.signal),
   );
+  await report(20, "전처리 완료");
 
-  const needsChunking =
-    buffer.length > WHISPER_MAX_SIZE ||
-    (await getAudioDurationSec(buffer, fileName, options.signal)) > TRANSCRIBE_MAX_DURATION_SEC;
-
-  if (!needsChunking) {
-    return transcribeSingleFile(buffer, fileName, options.language, options.signal);
+  // 클라이언트가 전달한 durationSec가 있으면 FFmpeg probe를 건너뜀
+  let durationSec: number;
+  if (typeof options.durationSec === "number" && options.durationSec > 0) {
+    durationSec = options.durationSec;
+    console.log(`[brevoca:perf] duration-probe — skipped (client=${durationSec.toFixed(1)}s)`);
+  } else {
+    durationSec = await timedStep("duration-probe", () =>
+      getAudioDurationSec(buffer, fileName, options.signal),
+    );
   }
 
-  return transcribeChunked(buffer, fileName, options.language, options.signal);
+  const needsChunking =
+    buffer.length > WHISPER_MAX_SIZE || durationSec > TRANSCRIBE_MAX_DURATION_SEC;
+
+  let result: TranscriptionResult;
+  if (!needsChunking) {
+    await report(22, "OpenAI 전사 API 호출 중");
+    result = await timedStep("transcribe-single", () =>
+      transcribeSingleFile(buffer, fileName, options.language, options.signal),
+    );
+    await report(50, "전사 API 완료");
+  } else {
+    await report(22, "오디오 분할 준비 중");
+    result = await timedStep("transcribe-chunked", () =>
+      transcribeChunked(buffer, fileName, options.language, durationSec, options.onProgress, options.signal),
+    );
+  }
+
+  console.log(`[brevoca:perf] transcribe-total — ${(performance.now() - totalStart).toFixed(0)}ms`);
+  return result;
 }
 
 async function preprocessAudio(
@@ -124,7 +211,7 @@ async function transcribeSingleFile(
   const model = getRequiredEnv("BREVOCA_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIBE_MODEL);
   const formData = new FormData();
   const blob = new Blob([new Uint8Array(fileBuffer)], { type: getMimeType(fileName) });
-  const includeDiarization = getBooleanEnv("BREVOCA_TRANSCRIBE_DIARIZATION", true);
+  const includeDiarization = getBooleanEnv("BREVOCA_TRANSCRIBE_DIARIZATION", false);
 
   formData.append("model", model);
   formData.append("language", language);
@@ -132,16 +219,19 @@ async function transcribeSingleFile(
   formData.append("response_format", includeDiarization ? "diarized_json" : "json");
   formData.append("chunking_strategy", "auto");
 
-  const response = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, {
-    method: "POST",
-    headers: getOpenAiHeaders(),
-    signal,
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(await getOpenAiErrorMessage(response));
-  }
+  const response = await fetchOpenAiWithRetry(
+    "/audio/transcriptions",
+    {
+      method: "POST",
+      headers: getOpenAiHeaders(),
+      signal,
+      body: formData,
+    },
+    {
+      operation: "transcription",
+      retryDelaysMs: OPENAI_TRANSCRIBE_RETRY_DELAYS_MS,
+    },
+  );
 
   const payload = (await response.json()) as {
     text?: string;
@@ -163,8 +253,11 @@ async function transcribeChunked(
   fileBuffer: Buffer,
   fileName: string,
   language: string,
+  totalDurationSec: number,
+  onProgress?: TranscribeProgressCallback,
   signal?: AbortSignal,
 ): Promise<TranscriptionResult> {
+  const report = onProgress ?? (() => {});
   const workDir = await fs.mkdtemp(path.join(tmpdir(), "brevoca-chunk-"));
 
   try {
@@ -173,10 +266,22 @@ async function transcribeChunked(
     await fs.writeFile(inputPath, fileBuffer);
 
     const chunkDurationSec = getChunkDurationSec();
-    const { paths: chunkPaths, offsets: chunkOffsets } = await splitAudio(inputPath, workDir, ext, chunkDurationSec, signal);
+    const { paths: chunkPaths, offsets: chunkOffsets } = await timedStep("split-audio", () =>
+      splitAudio(inputPath, workDir, ext, chunkDurationSec, totalDurationSec, signal),
+    );
 
-    const transcripts = await transcribeChunksInParallel(chunkPaths, language, chunkOffsets, signal);
+    await report(25, `오디오를 ${chunkPaths.length}개 청크로 분할 완료`);
 
+    // 청크 전사: 25% → 50% 구간을 균등 분배
+    const chunkProgressFn = (completedCount: number) => {
+      const ratio = completedCount / chunkPaths.length;
+      const progress = Math.round(25 + ratio * 25);
+      return report(progress, `청크 전사 중 (${completedCount}/${chunkPaths.length})`);
+    };
+
+    const transcripts = await transcribeChunksInParallel(chunkPaths, language, chunkOffsets, chunkProgressFn, signal);
+
+    await report(50, "모든 청크 전사 완료");
     return mergeTranscriptionResults(transcripts);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
@@ -187,11 +292,15 @@ async function transcribeChunksInParallel(
   chunkPaths: string[],
   language: string,
   chunkOffsets: number[],
+  onChunkComplete?: (completedCount: number) => void | Promise<void>,
   signal?: AbortSignal,
 ): Promise<TranscriptionResult[]> {
   const transcripts = new Array<TranscriptionResult>(chunkPaths.length);
   let nextIndex = 0;
+  let completedCount = 0;
   const concurrency = Math.min(getTranscribeConcurrency(), chunkPaths.length);
+
+  console.log(`[brevoca:perf] transcribe-chunks — ${chunkPaths.length} chunks, concurrency=${concurrency}`);
 
   const workers = Array.from(
     { length: concurrency },
@@ -204,16 +313,25 @@ async function transcribeChunksInParallel(
           return;
         }
 
-        const chunkPath = chunkPaths[currentIndex];
-        const chunkBuffer = await fs.readFile(chunkPath);
-        const chunkName = path.basename(chunkPath);
-        const chunkResult = await transcribeSingleFile(chunkBuffer, chunkName, language, signal);
-        const chunkOffsetSec = chunkOffsets[currentIndex] ?? 0;
-        transcripts[currentIndex] = {
-          transcriptText: chunkResult.transcriptText,
-          transcriptSegments: offsetTranscriptSegments(chunkResult.transcriptSegments, chunkOffsetSec),
-          transcriptChunks: chunkResult.transcriptChunks,
-        };
+        await globalTranscribeSemaphore.acquire();
+        try {
+          const chunkPath = chunkPaths[currentIndex];
+          const chunkBuffer = await fs.readFile(chunkPath);
+          const chunkName = path.basename(chunkPath);
+          const chunkResult = await timedStep(`transcribe-chunk[${currentIndex}]`, () =>
+            transcribeSingleFile(chunkBuffer, chunkName, language, signal),
+          );
+          const chunkOffsetSec = chunkOffsets[currentIndex] ?? 0;
+          transcripts[currentIndex] = {
+            transcriptText: chunkResult.transcriptText,
+            transcriptSegments: offsetTranscriptSegments(chunkResult.transcriptSegments, chunkOffsetSec),
+            transcriptChunks: chunkResult.transcriptChunks,
+          };
+          completedCount += 1;
+          await onChunkComplete?.(completedCount);
+        } finally {
+          globalTranscribeSemaphore.release();
+        }
       }
     },
   );
@@ -419,26 +537,29 @@ async function getAudioDurationSecFromPath(
 ): Promise<number> {
   const ffmpegPath = await getFFmpegPath();
 
-  // ffprobe 없이 ffmpeg -i 의 stderr 출력에서 Duration 파싱
+  // ffprobe 없이 ffmpeg stderr 출력에서 Duration 파싱
   try {
-    await execFileAsync(
+    const { stderr } = await execFileAsync(
       ffmpegPath,
       ["-i", inputPath, "-hide_banner", "-f", "null", "-"],
       signal ? { signal } : undefined,
     );
+    return parseDurationFromFfmpegOutput(String(stderr));
   } catch (err: unknown) {
-    // ffmpeg -i 는 출력 없이 실행하면 에러로 끝나지만 stderr에 Duration 정보 포함
-    const stderr = String((err as { stderr?: unknown })?.stderr ?? "");
-    const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-    if (match) {
-      const hours = parseInt(match[1], 10);
-      const minutes = parseInt(match[2], 10);
-      const seconds = parseFloat(match[3]);
-      return hours * 3600 + minutes * 60 + seconds;
-    }
+    return parseDurationFromFfmpegOutput(String((err as { stderr?: unknown })?.stderr ?? ""));
+  }
+}
+
+function parseDurationFromFfmpegOutput(output: string): number {
+  const match = output.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (!match) {
+    return 0;
   }
 
-  return 0;
+  const hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const seconds = parseFloat(match[3]);
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 /**
@@ -512,22 +633,35 @@ async function splitAudio(
   workDir: string,
   _ext: string,
   chunkDurationSec: number,
+  totalDurationSec: number,
   signal?: AbortSignal,
 ): Promise<{ paths: string[]; offsets: number[] }> {
   const ffmpegPath = await getFFmpegPath();
 
-  // 항상 opus/ogg로 재인코딩하여 크기를 예측 가능하게 만듦
-  // opus 48kbps ≈ 15분 → ~5.4MB (24MB 제한 안전)
+  // 전처리 단계에서 이미 opus/ogg로 인코딩되어 있으므로 스트림 복사 사용
   const outExt = ".ogg";
   const outputPattern = path.join(workDir, `chunk_%03d${outExt}`);
 
-  // 무음 구간 기반 분할 시점 탐색 → 발화 도중 잘림 방지
-  const totalDurationSec = await getAudioDurationSecFromPath(inputPath, signal);
-  const silenceSplitPoints = await findSilenceSplitPoints(inputPath, totalDurationSec, chunkDurationSec, signal);
+  // 무음 기반 분할: BREVOCA_SILENCE_SPLIT=false로 끌 수 있음
+  const useSilenceSplit = getBooleanEnv("BREVOCA_SILENCE_SPLIT", true);
+  let silenceSplitPoints: number[] = [];
+  if (useSilenceSplit) {
+    silenceSplitPoints = await timedStep("silence-detect", () =>
+      findSilenceSplitPoints(inputPath, totalDurationSec, chunkDurationSec, signal),
+    );
+  } else {
+    console.log("[brevoca:perf] silence-detect — skipped (BREVOCA_SILENCE_SPLIT=false)");
+  }
 
   const segmentArgs = silenceSplitPoints.length > 0
     ? ["-segment_times", silenceSplitPoints.map((t) => t.toFixed(3)).join(",")]
     : ["-segment_time", String(chunkDurationSec)];
+
+  // 입력이 이미 opus/ogg이면 스트림 복사, 아니면 재인코딩
+  const isAlreadyOpus = inputPath.endsWith(".ogg");
+  const codecArgs = isAlreadyOpus
+    ? ["-c:a", "copy"]
+    : ["-c:a", "libopus", "-b:a", PREPROCESS_BITRATE];
 
   await execFileAsync(
     ffmpegPath,
@@ -535,8 +669,7 @@ async function splitAudio(
       "-i", inputPath,
       "-f", "segment",
       ...segmentArgs,
-      "-c:a", "libopus",
-      "-b:a", PREPROCESS_BITRATE,
+      ...codecArgs,
       "-vn",
       "-reset_timestamps", "1",
       "-y",
@@ -713,22 +846,24 @@ async function mergeChunkSummaries(
 }
 
 async function requestSummaryText(input: string, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(`${OPENAI_BASE_URL}/responses`, {
-    method: "POST",
-    headers: {
-      ...getOpenAiHeaders(),
-      "Content-Type": "application/json",
+  const response = await fetchOpenAiWithRetry(
+    "/responses",
+    {
+      method: "POST",
+      headers: {
+        ...getOpenAiHeaders(),
+        "Content-Type": "application/json",
+      },
+      signal,
+      body: JSON.stringify({
+        model: getRequiredEnv("BREVOCA_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL),
+        input,
+      }),
     },
-    signal,
-    body: JSON.stringify({
-      model: getRequiredEnv("BREVOCA_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL),
-      input,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(await getOpenAiErrorMessage(response));
-  }
+    {
+      operation: "summary",
+    },
+  );
 
   const payload = (await response.json()) as {
     output_text?: string;
@@ -986,6 +1121,137 @@ function getBooleanEnv(name: string, fallback: boolean): boolean {
   }
 
   return fallback;
+}
+
+async function fetchOpenAiWithRetry(
+  endpoint: string,
+  init: RequestInit,
+  options: {
+    operation: OpenAiOperation;
+    retryDelaysMs?: number[];
+  },
+): Promise<Response> {
+  const retryDelaysMs = options.retryDelaysMs ?? [];
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      const response = await fetch(`${OPENAI_BASE_URL}${endpoint}`, init);
+      if (response.ok) {
+        return response;
+      }
+
+      const detail = await getOpenAiErrorMessage(response);
+      const isRetryable = OPENAI_RETRYABLE_STATUS_CODES.has(response.status);
+      if (isRetryable && attempt < retryDelaysMs.length) {
+        await sleep(retryDelaysMs[attempt], init.signal);
+        continue;
+      }
+
+      throw new OpenAiHttpError(formatOpenAiHttpErrorMessage(options.operation, response.status, detail));
+    } catch (error) {
+      if (error instanceof OpenAiHttpError) {
+        throw error;
+      }
+
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      if (!isRetryableFetchError(error) || attempt >= retryDelaysMs.length) {
+        throw new Error(formatOpenAiNetworkErrorMessage(options.operation, error));
+      }
+
+      await sleep(retryDelaysMs[attempt], init.signal);
+    }
+  }
+
+  throw new Error(`${getOpenAiOperationLabel(options.operation)} 호출이 반복 실패했습니다.`);
+}
+
+function formatOpenAiHttpErrorMessage(
+  operation: OpenAiOperation,
+  status: number,
+  detail: string,
+): string {
+  return `${getOpenAiOperationLabel(operation)} 호출이 HTTP ${status}로 실패했습니다: ${detail}`;
+}
+
+function formatOpenAiNetworkErrorMessage(operation: OpenAiOperation, error: unknown): string {
+  const rawDetail = error instanceof Error ? error.message : String(error);
+  const lower = rawDetail.toLowerCase();
+  const label = getOpenAiOperationLabel(operation);
+
+  if (lower.includes("fetch failed")) {
+    return `${label} 호출 중 원격 API 연결에 실패했습니다.`;
+  }
+
+  if (lower.includes("econnreset")) {
+    return `${label} 호출 중 연결이 재설정되었습니다.`;
+  }
+
+  if (lower.includes("socket hang up")) {
+    return `${label} 호출 중 원격 서버가 연결을 종료했습니다.`;
+  }
+
+  if (lower.includes("timeout")) {
+    return `${label} 호출이 시간 안에 완료되지 않았습니다.`;
+  }
+
+  if (lower.includes("network")) {
+    return `${label} 호출 중 네트워크 오류가 발생했습니다: ${rawDetail}`;
+  }
+
+  return `${label} 호출 중 요청 전송에 실패했습니다: ${rawDetail}`;
+}
+
+function getOpenAiOperationLabel(operation: OpenAiOperation): string {
+  return operation === "transcription" ? "OpenAI 전사 API" : "OpenAI 요약 API";
+}
+
+function isRetryableFetchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up") ||
+    message.includes("timeout") ||
+    message.includes("temporarily unavailable")
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.name === "AbortError" || error.message.toLowerCase().includes("aborted");
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const handleAbort = () => {
+      cleanup();
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Request aborted"));
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", handleAbort);
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
 }
 
 async function getOpenAiErrorMessage(response: Response): Promise<string> {

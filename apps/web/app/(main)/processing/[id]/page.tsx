@@ -34,6 +34,7 @@ export default function ProcessingPage({
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [canceling, setCanceling] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let mounted = true;
@@ -50,6 +51,7 @@ export default function ProcessingPage({
         return;
       }
 
+      setNow(Date.now());
       setJob(nextJob);
       setLoading(false);
 
@@ -75,6 +77,24 @@ export default function ProcessingPage({
     };
   }, [id, router]);
 
+  useEffect(() => {
+    if (!job) {
+      return;
+    }
+
+    if (job.status !== 'queued' && job.status !== 'processing') {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [job]);
+
   const handleRetry = async () => {
     setRetrying(true);
     const response = await authedFetch(`/api/jobs/${id}/retry`, {
@@ -83,6 +103,7 @@ export default function ProcessingPage({
     if (response.ok) {
       const refreshed = await authedFetch(`/api/jobs/${id}`);
       if (refreshed.ok) {
+        setNow(Date.now());
         setJob((await refreshed.json()) as JobRecord);
       }
     }
@@ -118,6 +139,7 @@ export default function ProcessingPage({
 
   const currentStep = getCurrentStep(job);
   const errorType = (job.errorType ?? 'provider_error') as ProcessingErrorType;
+  const elapsedMs = getElapsedMs(job, now);
 
   return (
     <div className="p-6 lg:p-8">
@@ -145,10 +167,18 @@ export default function ProcessingPage({
         )}
 
         <div className="mb-8 p-6 rounded-[var(--radius-xl)] bg-[var(--bg-surface)] border border-[var(--line-soft)]">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-[var(--text-secondary)]">
-              전체 진행률
-            </span>
+          <div className="mb-3 flex items-start justify-between gap-4">
+            <div>
+              <span className="text-sm text-[var(--text-secondary)]">
+                전체 진행률
+              </span>
+              <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                진행 시간{' '}
+                <span className="font-mono text-[var(--text-primary)]">
+                  {formatElapsedMs(elapsedMs)}
+                </span>
+              </div>
+            </div>
             <span className="text-sm font-mono text-[var(--mint-500)]">
               {job.progress}%
             </span>
@@ -310,4 +340,31 @@ function getStepStatus(
   }
 
   return 'pending';
+}
+
+function getElapsedMs(job: JobRecord, now: number): number {
+  const startAt = Date.parse(job.createdAt);
+
+  if (!Number.isFinite(startAt)) {
+    return 0;
+  }
+
+  const isActive = job.status === 'queued' || job.status === 'processing';
+  const endAt = isActive ? now : Date.parse(job.updatedAt);
+  const safeEndAt = Number.isFinite(endAt) ? endAt : now;
+
+  return Math.max(0, safeEndAt - startAt);
+}
+
+function formatElapsedMs(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }

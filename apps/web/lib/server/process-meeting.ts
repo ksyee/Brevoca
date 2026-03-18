@@ -1,10 +1,11 @@
 import "server-only";
 
 import { promptTemplateIds, type ProcessingErrorType } from "@brevoca/contracts";
-import { summarizeTranscript, transcribeAudioFile } from "./openai";
+import { summarizeTranscript, transcribeAudioFile, type TranscribeProgressCallback } from "./openai";
 import {
   completeProcessing,
   downloadMeetingAudio,
+  getJob,
   getStoredMeetingByJob,
   markStageStarted,
   resetJobForRetry,
@@ -68,50 +69,36 @@ async function processMeeting(jobId: string, signal: AbortSignal, options?: Star
   let stage: "transcribe" | "summarize" = "transcribe";
 
   try {
-    await markStageStarted(jobId, "transcribing", "transcribe", 15, "OpenAI 전사를 시작합니다");
+    await markStageStarted(jobId, "transcribing", "transcribe", 15, "전사 준비를 시작합니다");
 
-    if (!storedMeeting.storageKey) {
+    if (!options?.uploadedAudio?.fileBuffer && !storedMeeting.storageKey) {
       throw new Error("Meeting audio is missing from storage.");
     }
 
-    const fileBuffer =
-      options?.uploadedAudio?.fileBuffer ??
-      await downloadMeetingAudio(storedMeeting.storageKey);
-
-    const isChunked = fileBuffer.length > 24 * 1024 * 1024;
-    if (isChunked) {
-      await updateJob(jobId, {
-        stage: "transcribe",
-        status: "processing",
-        progress: 20,
-        logs: [
-          `오디오 업로드 완료: ${storedMeeting.fileName ?? storedMeeting.id}`,
-          "OpenAI 전사를 시작합니다",
-          `파일 크기(${Math.round(fileBuffer.length / 1024 / 1024)}MB)가 크므로 분할 전사를 진행합니다`,
-        ],
-      });
+    let fileBuffer: Buffer;
+    if (options?.uploadedAudio?.fileBuffer) {
+      fileBuffer = options.uploadedAudio.fileBuffer;
+      await appendJobLog(jobId, "업로드된 오디오를 사용해 Storage 다운로드를 생략합니다");
+    } else {
+      await appendJobLog(jobId, "Storage에서 회의 오디오 다운로드를 시작합니다");
+      fileBuffer = await downloadMeetingAudio(storedMeeting.storageKey!);
+      await appendJobLog(jobId, "Storage에서 회의 오디오 다운로드를 완료했습니다", 20);
     }
+
+    const onTranscribeProgress: TranscribeProgressCallback = (progress, message) =>
+      appendJobLog(jobId, message, progress);
 
     const transcript = await transcribeAudioFile({
       fileBuffer,
       fileName: storedMeeting.fileName || `${storedMeeting.id}.webm`,
       language: storedMeeting.language,
+      durationSec: storedMeeting.durationSec,
       signal,
+      onProgress: onTranscribeProgress,
     });
 
     throwIfAborted(signal);
-
-    await updateJob(jobId, {
-      stage: "transcribe",
-      status: "processing",
-      progress: 55,
-      logs: [
-        `오디오 업로드 완료: ${storedMeeting.fileName ?? storedMeeting.id}`,
-        "OpenAI 전사를 시작합니다",
-        ...(isChunked ? [`분할 전사 완료 (${Math.round(fileBuffer.length / 1024 / 1024)}MB)`] : []),
-        "전사 완료",
-      ],
-    });
+    await appendJobLog(jobId, "전사 완료", 55);
 
     await markStageStarted(jobId, "summarizing", "summarize", 70, "OpenAI 요약을 시작합니다");
     stage = "summarize";
@@ -141,7 +128,7 @@ async function processMeeting(jobId: string, signal: AbortSignal, options?: Star
 function classifyError(message: string, stage: "transcribe" | "summarize"): ProcessingErrorType {
   const lower = message.toLowerCase();
 
-  if (lower.includes("timeout")) {
+  if (lower.includes("timeout") || lower.includes("http 408") || message.includes("시간 안에 완료되지")) {
     return "timeout";
   }
 
@@ -149,10 +136,16 @@ function classifyError(message: string, stage: "transcribe" | "summarize"): Proc
     lower.includes("network") ||
     lower.includes("bad gateway") ||
     lower.includes("gateway") ||
+    lower.includes("http 502") ||
+    lower.includes("http 504") ||
     lower.includes("fetch failed") ||
     lower.includes("econnreset") ||
     lower.includes("socket hang up") ||
-    lower.includes("failed to download meeting audio")
+    lower.includes("failed to download meeting audio") ||
+    message.includes("네트워크 오류") ||
+    message.includes("연결에 실패") ||
+    message.includes("연결이 재설정") ||
+    message.includes("연결을 종료")
   ) {
     return "network_error";
   }
@@ -161,6 +154,8 @@ function classifyError(message: string, stage: "transcribe" | "summarize"): Proc
     lower.includes("api key") ||
     lower.includes("unauthorized") ||
     lower.includes("quota") ||
+    lower.includes("http 4") ||
+    lower.includes("http 5") ||
     lower.includes("the server had an error processing your request") ||
     lower.includes("help.openai.com") ||
     lower.includes("please include the request id") ||
@@ -171,6 +166,20 @@ function classifyError(message: string, stage: "transcribe" | "summarize"): Proc
   }
 
   return stage === "transcribe" ? "transcription_failed" : "summary_failed";
+}
+
+async function appendJobLog(jobId: string, message: string, progress?: number): Promise<void> {
+  const job = await getJob(jobId);
+  if (!job) {
+    throw new Error(`Job ${jobId} not found`);
+  }
+
+  await updateJob(jobId, {
+    stage: job.stage,
+    status: job.status,
+    progress: typeof progress === "number" ? progress : job.progress,
+    logs: [...job.logs, message],
+  });
 }
 
 function throwIfAborted(signal: AbortSignal): void {
